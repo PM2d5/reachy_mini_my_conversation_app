@@ -71,3 +71,7 @@ external_content/external_tools/*
 external_content/user_personalities/
 external_content/installed_tool_spaces.json
 external_content/profile_toolsets.json
+
+# Runtime artifacts written by desktop-app instances running from an editable install
+src/my_conversation_app/memory*.json
+src/my_conversation_app/startup_settings.json

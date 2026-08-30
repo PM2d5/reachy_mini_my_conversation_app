@@ -252,3 +252,41 @@ class TestToolNameAliasing:
         )
         assert set(conn._tool_aliases) == {"ext0_get_time"}
         assert conn._tool_aliases["ext0_get_time"] == "b__get_time"
+
+
+def test_partial_session_update_keeps_tool_aliases():
+    """A voice-only session.update must not wipe the alias map."""
+    conn = _connection()
+    original = "pollen_robotics_reachy_mini_weather_tool__get_weather"
+
+    class FakeWebsocket:
+        def __init__(self) -> None:
+            self.sent: list[str] = []
+
+        async def send(self, message: str) -> None:
+            self.sent.append(message)
+
+    fake_ws = FakeWebsocket()
+    conn._connection = fake_ws  # type: ignore[assignment]
+
+    asyncio.run(
+        conn.send(
+            {
+                "type": "session.update",
+                "session": {"tools": [{"type": "function", "name": original, "description": "", "parameters": {}}]},
+            }
+        )
+    )
+    asyncio.run(
+        conn.send(
+            {
+                "type": "session.update",
+                "session": {"audio": {"output": {"voice": "Mione"}}},
+            }
+        )
+    )
+
+    event = conn.parse_event(
+        json.dumps({"type": "response.function_call_arguments.done", "name": "ext0_get_weather", "arguments": "{}"})
+    )
+    assert event.name == original

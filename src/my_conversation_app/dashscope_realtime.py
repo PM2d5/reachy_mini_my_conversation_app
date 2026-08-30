@@ -171,8 +171,15 @@ class DashScopeConnection(AsyncRealtimeConnection):
     async def send(self, event: RealtimeClientEvent | RealtimeClientEventParam) -> None:
         """Send a client event, flattening session updates for DashScope."""
         if isinstance(event, dict) and event.get("type") == "session.update":
-            self._tool_aliases.clear()
-            session = self._alias_session_tools(normalize_session(event.get("session") or {}))
+            normalized = normalize_session(event.get("session") or {})
+            if isinstance(normalized.get("tools"), list):
+                # A full update re-registers the tools; rebuild the alias map.
+                self._tool_aliases.clear()
+                session = self._alias_session_tools(normalized)
+            else:
+                # Partial update (voice/personality live change): the server
+                # keeps the aliased tools, so the existing map must survive.
+                session = normalized
             payload = {
                 "type": "session.update",
                 "event_id": f"event_{uuid.uuid4().hex}",
