@@ -136,14 +136,47 @@ class DashScopeConnection(AsyncRealtimeConnection):
         """Bind the DashScope translations to an open websocket."""
         super().__init__(websocket)
         self._transcript_state = _TranscriptDeltaState()
+        # Alias -> original tool name for namespaced MCP tools; DashScope
+        # garbles long function names (observed duplicated prefixes), so only
+        # short aliases travel to the model and call events map back.
+        self._tool_aliases: dict[str, str] = {}
+
+    def _alias_session_tools(self, session: dict[str, Any]) -> dict[str, Any]:
+        """Replace namespaced tool names with short unique aliases."""
+        tools = session.get("tools")
+        if not isinstance(tools, list):
+            return session
+        aliased = dict(session)
+        rewritten: list[Any] = []
+        for index, tool in enumerate(tools):
+            if isinstance(tool, Mapping) and isinstance(tool.get("function"), Mapping):
+                name = tool["function"].get("name")
+                if isinstance(name, str) and "__" in name:
+                    alias = f"ext{index}_{name.rsplit('__', 1)[-1]}"
+                    self._tool_aliases[alias] = name
+                    tool = dict(tool)
+                    tool["function"] = {**tool["function"], "name": alias}
+            rewritten.append(tool)
+        aliased["tools"] = rewritten
+        return aliased
+
+    def _restore_tool_names(self, fields: dict[str, Any]) -> dict[str, Any]:
+        """Map aliased function-call names in an event back to their originals."""
+        name = fields.get("name")
+        if isinstance(name, str) and name in self._tool_aliases:
+            fields = dict(fields)
+            fields["name"] = self._tool_aliases[name]
+        return fields
 
     async def send(self, event: RealtimeClientEvent | RealtimeClientEventParam) -> None:
         """Send a client event, flattening session updates for DashScope."""
         if isinstance(event, dict) and event.get("type") == "session.update":
+            self._tool_aliases.clear()
+            session = self._alias_session_tools(normalize_session(event.get("session") or {}))
             payload = {
                 "type": "session.update",
                 "event_id": f"event_{uuid.uuid4().hex}",
-                "session": normalize_session(event.get("session") or {}),
+                "session": session,
             }
             await self._connection.send(json.dumps(payload))
             return
@@ -161,6 +194,8 @@ class DashScopeConnection(AsyncRealtimeConnection):
             pcm = np.frombuffer(pcm_bytes, dtype=np.int16)
             resampled = resample_pcm16(pcm, DASHSCOPE_OUTPUT_SAMPLE_RATE, HuggingFaceRealtimeHandler.SAMPLE_RATE)
             fields["delta"] = base64.b64encode(resampled.tobytes()).decode("utf-8")
+        elif event_type == "response.function_call_arguments.done":
+            fields = self._restore_tool_names(fields)
 
         fields["type"] = _EVENT_NAME_MAP.get(event_type, event_type)
         return fields

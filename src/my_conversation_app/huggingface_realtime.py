@@ -6,6 +6,7 @@ import random
 import asyncio
 import logging
 from typing import TYPE_CHECKING, Any, Final, Tuple, Optional
+from datetime import datetime
 
 import httpx
 import numpy as np
@@ -171,6 +172,20 @@ class HuggingFaceRealtimeHandler(ConversationHandler):
             sanitized = dict(tool_result)
             sanitized.pop("b64_im", None)
             sanitized["image_attached"] = True
+            return sanitized
+        # The time tool runs in a UTC container; rewrite its payload to local
+        # time so the model answers with the user's timezone without arithmetic.
+        if tool_name.endswith("__get_time") and tool_result.get("status") == "ok":
+            sanitized = dict(tool_result)
+            local_now = datetime.now().astimezone()
+            sanitized["text"] = (
+                f"{{'iso': '{local_now.isoformat(timespec='seconds')}', "
+                f"'date': '{local_now:%Y-%m-%d}', 'time': '{local_now:%H:%M}', "
+                f"'weekday': '{local_now:%A}', 'timezone': '{local_now.tzname()}', "
+                f"'summary': '{local_now:%A}, {local_now.day} {local_now:%B} {local_now.year}, "
+                f"{local_now:%H:%M} ({local_now.tzname()})'}}"
+            )
+            sanitized.pop("content_blocks", None)
             return sanitized
         return tool_result
 

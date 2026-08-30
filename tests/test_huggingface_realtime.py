@@ -500,3 +500,47 @@ async def test_change_voice_updates_live_hf_session_without_restart(monkeypatch:
     restart.assert_not_awaited()
     session = captured_update["session"]
     assert session["audio"]["output"]["voice"] == "Serena"
+
+
+def test_time_tool_result_is_rewritten_to_local_timezone() -> None:
+    """The UTC time-tool payload must be replaced with local time before the model sees it."""
+    from datetime import datetime
+
+    from my_conversation_app.huggingface_realtime import HuggingFaceRealtimeHandler
+
+    result = {
+        "status": "ok",
+        "text": "{'iso': '2026-08-30T13:36:24+00:00', 'date': '2026-08-30', 'time': '13:36', 'timezone': 'UTC'}",
+        "content_blocks": [{"type": "text", "text": "same"}],
+    }
+    sanitized = HuggingFaceRealtimeHandler._sanitize_tool_result_for_model(
+        "pollen_robotics_reachy_mini_time_tool__get_time", result
+    )
+
+    local_now = datetime.now().astimezone()
+    assert "UTC" not in sanitized["text"]
+    assert f"{local_now:%Y-%m-%d}" in sanitized["text"]
+    assert f"{local_now:%H:%M}" in sanitized["text"]
+    assert "content_blocks" not in sanitized
+    # The original payload stays untouched for non-model consumers.
+    assert result["text"].startswith("{'iso': '2026-08-30T13")
+
+
+def test_time_tool_rewrite_skips_failed_results_and_other_tools() -> None:
+    """Failed time lookups and unrelated tools pass through unchanged."""
+    from my_conversation_app.huggingface_realtime import HuggingFaceRealtimeHandler
+
+    failed = {"status": "error", "text": "boom"}
+    assert (
+        HuggingFaceRealtimeHandler._sanitize_tool_result_for_model(
+            "pollen_robotics_reachy_mini_time_tool__get_time", failed
+        )
+        is failed
+    )
+    other = {"status": "ok", "text": "sunny"}
+    assert (
+        HuggingFaceRealtimeHandler._sanitize_tool_result_for_model(
+            "pollen_robotics_reachy_mini_weather_tool__get_weather", other
+        )
+        is other
+    )

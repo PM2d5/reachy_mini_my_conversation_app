@@ -196,3 +196,59 @@ def test_build_client_targets_configured_model(monkeypatch):
 
     manager = client.realtime.connect()
     assert manager._url == "wss://example.test/api-ws/v1/realtime?model=qwen-omni-turbo-realtime-latest"
+
+
+class TestToolNameAliasing:
+    """Namespaced MCP tool names are aliased to the model and restored on calls."""
+
+    def _sent_payload(self, conn, session):
+        """Capture the websocket frame emitted for a session.update."""
+        import asyncio
+
+        sent: list[str] = []
+
+        class FakeWebsocket:
+            async def send(self, message: str) -> None:
+                sent.append(message)
+
+        conn._connection = FakeWebsocket()  # type: ignore[assignment]
+        asyncio.run(conn.send({"type": "session.update", "session": session}))
+        return json.loads(sent[0])
+
+    def test_long_tool_names_are_aliased_and_restored(self):
+        """Namespaced tools ship as short aliases and call events map back."""
+        conn = _connection()
+        original = "pollen_robotics_reachy_mini_search_tool__search_web"
+        payload = self._sent_payload(
+            conn,
+            {
+                "tools": [
+                    {"type": "function", "name": original, "description": "Search the web.", "parameters": {}},
+                    {"type": "function", "name": "dance", "description": "Dance.", "parameters": {}},
+                ]
+            },
+        )
+
+        shipped_names = [t["function"]["name"] for t in payload["session"]["tools"]]
+        assert "dance" in shipped_names
+        alias = "ext0_search_web"
+        assert alias in shipped_names
+        assert original not in shipped_names
+        assert conn._tool_aliases == {alias: original}
+
+        event = conn.parse_event(
+            json.dumps({"type": "response.function_call_arguments.done", "name": alias, "arguments": "{}"})
+        )
+        assert event.name == original
+
+    def test_alias_map_resets_between_sessions(self):
+        """A new session.update clears stale aliases before re-registering tools."""
+        conn = _connection()
+        self._sent_payload(
+            conn, {"tools": [{"type": "function", "name": "a__get_time", "description": "", "parameters": {}}]}
+        )
+        self._sent_payload(
+            conn, {"tools": [{"type": "function", "name": "b__get_time", "description": "", "parameters": {}}]}
+        )
+        assert set(conn._tool_aliases) == {"ext0_get_time"}
+        assert conn._tool_aliases["ext0_get_time"] == "b__get_time"
