@@ -12,7 +12,7 @@ from dotenv import find_dotenv, load_dotenv
 
 # Locked profile: set to a profile name (e.g., "astronomer") to lock the app
 # to that profile and disable all profile switching. Leave as None for normal behavior.
-LOCKED_PROFILE: str | None = "_my_conversation_app_locked_profile"
+LOCKED_PROFILE: str | None = None
 PROJECT_ROOT = Path(__file__).parents[2].resolve()
 
 
