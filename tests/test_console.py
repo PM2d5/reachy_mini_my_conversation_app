@@ -852,3 +852,30 @@ def test_rpc_settings_methods() -> None:
     assert isinstance(r2["result"], list)
     assert "spaces" in r3["result"]
     assert "enabled_tools" in r4["result"]
+
+
+def test_status_reports_selected_backend_and_key(monkeypatch) -> None:
+    """conversation.status reports the selected backend and its key readiness."""
+    from my_conversation_app import config as app_config
+
+    app = FastAPI()
+    stream = LocalStream(MagicMock(), _rpc_robot(), settings_app=app)
+    stream._init_settings_ui_if_needed()
+
+    monkeypatch.setattr(app_config.config, "REALTIME_BACKEND", "dashscope")
+    monkeypatch.setattr(app_config.config, "DASHSCOPE_API_KEY", "sk-test")
+    dashscope_ready = _rpc_call(app, "conversation.status")["result"]
+    assert dashscope_ready["backend"] == "dashscope"
+    assert dashscope_ready["has_key"] is True
+    assert dashscope_ready["can_proceed"] is True
+
+    monkeypatch.setattr(app_config.config, "DASHSCOPE_API_KEY", None)
+    dashscope_missing = _rpc_call(app, "conversation.status")["result"]
+    assert dashscope_missing["backend"] == "dashscope"
+    assert dashscope_missing["has_key"] is False
+    assert dashscope_missing["can_proceed"] is False
+
+    monkeypatch.setattr(app_config.config, "REALTIME_BACKEND", "huggingface")
+    huggingface = _rpc_call(app, "conversation.status")["result"]
+    assert huggingface["backend"] == "huggingface"
+    assert huggingface["has_key"] == huggingface["has_hf_connection"]

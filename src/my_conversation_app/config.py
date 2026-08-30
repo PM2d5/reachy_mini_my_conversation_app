@@ -61,6 +61,76 @@ HF_AVAILABLE_VOICES: list[str] = [
 ]
 
 HF_BACKEND = "huggingface"
+DASHSCOPE_BACKEND = "dashscope"
+REALTIME_BACKEND_ENV = "REALTIME_BACKEND"
+DASHSCOPE_API_KEY_ENV = "DASHSCOPE_API_KEY"
+DASHSCOPE_REALTIME_MODEL_ENV = "DASHSCOPE_REALTIME_MODEL"
+DASHSCOPE_REALTIME_WS_BASE_ENV = "DASHSCOPE_REALTIME_WS_BASE"
+DASHSCOPE_REALTIME_VOICE_ENV = "DASHSCOPE_REALTIME_VOICE"
+DASHSCOPE_REALTIME_WS_BASE_DEFAULT = "wss://dashscope.aliyuncs.com/api-ws/v1"
+DASHSCOPE_REALTIME_MODEL_DEFAULT = "qwen3.5-omni-flash-realtime"
+
+# Qwen3.5-Omni-Realtime voice catalog (Alibaba Model Studio voice list;
+# Cherry/Chelsie are qwen3/qwen-omni-turbo only).
+DASHSCOPE_AVAILABLE_VOICES: list[str] = [
+    "Tina",
+    "Cindy",
+    "Liora Mira",
+    "Sunnybobi",
+    "Raymond",
+    "Ethan",
+    "Theo Calm",
+    "Serena",
+    "Harvey",
+    "Maia",
+    "Evan",
+    "Qiao",
+    "Momo",
+    "Wil",
+    "Angel",
+    "Li Cassian",
+    "Mia",
+    "Joyner",
+    "Gold",
+    "Katerina",
+    "Ryan",
+    "Jennifer",
+    "Aiden",
+    "Mione",
+    "Sohee",
+    "Lenn",
+    "Ono Anna",
+    "Sonrisa",
+    "Bodega",
+    "Emilien",
+    "Andre",
+    "Radio Gol",
+    "Alek",
+    "Rizky",
+    "Roya",
+    "Arda",
+    "Hana",
+    "Dolce",
+    "Jakub",
+    "Griet",
+    "Eliška",
+    "Marina",
+    "Siiri",
+    "Ingrid",
+    "Sigga",
+    "Bea",
+    "Chloe",
+    "Sunny",
+    "Dylan",
+    "Eric",
+    "Peter",
+    "Joseph Chen",
+    "Marcus",
+    "Li",
+    "Kiki",
+    "Rocky",
+]
+
 HF_REALTIME_CONNECTION_MODE_ENV = "HF_REALTIME_CONNECTION_MODE"
 HF_REALTIME_WS_URL_ENV = "HF_REALTIME_WS_URL"
 REALTIME_TRANSCRIPTION_LANGUAGE_ENV = "REALTIME_TRANSCRIPTION_LANGUAGE"
@@ -180,6 +250,14 @@ class HFRealtimeURLParts:
     host: str | None
     port: int | None
     has_realtime_path: bool
+
+
+def _normalize_realtime_backend(value: str | None) -> str:
+    """Normalize the realtime backend selector, defaulting to Hugging Face."""
+    if value is None or not value.strip():
+        return HF_BACKEND
+    normalized = value.strip().lower()
+    return normalized if normalized in (HF_BACKEND, DASHSCOPE_BACKEND) else HF_BACKEND
 
 
 def parse_hf_realtime_url(realtime_url: str) -> HFRealtimeURLParts:
@@ -318,6 +396,13 @@ class Config:
     HF_REALTIME_WS_URL = os.getenv(HF_REALTIME_WS_URL_ENV)
     REALTIME_TRANSCRIPTION_LANGUAGE = _normalize_transcription_language(os.getenv(REALTIME_TRANSCRIPTION_LANGUAGE_ENV))
     HF_TOKEN = os.getenv("HF_TOKEN")  # Optional, falls back to hf auth login if not set
+    REALTIME_BACKEND = _normalize_realtime_backend(os.getenv(REALTIME_BACKEND_ENV))
+    DASHSCOPE_API_KEY = os.getenv(DASHSCOPE_API_KEY_ENV)
+    DASHSCOPE_REALTIME_MODEL = os.getenv(DASHSCOPE_REALTIME_MODEL_ENV) or DASHSCOPE_REALTIME_MODEL_DEFAULT
+    DASHSCOPE_REALTIME_WS_BASE = (
+        os.getenv(DASHSCOPE_REALTIME_WS_BASE_ENV) or DASHSCOPE_REALTIME_WS_BASE_DEFAULT
+    ).rstrip("/")
+    DASHSCOPE_REALTIME_VOICE = os.getenv(DASHSCOPE_REALTIME_VOICE_ENV)
 
     logger.debug(
         "HF mode: %s, HF session URL set: %s, HF direct URL set: %s",
@@ -430,16 +515,35 @@ def refresh_runtime_config_from_env() -> None:
         os.getenv(REALTIME_TRANSCRIPTION_LANGUAGE_ENV)
     )
     config.HF_TOKEN = os.getenv("HF_TOKEN")
+    config.REALTIME_BACKEND = _normalize_realtime_backend(os.getenv(REALTIME_BACKEND_ENV))
+    config.DASHSCOPE_API_KEY = os.getenv(DASHSCOPE_API_KEY_ENV)
+    config.DASHSCOPE_REALTIME_MODEL = os.getenv(DASHSCOPE_REALTIME_MODEL_ENV) or DASHSCOPE_REALTIME_MODEL_DEFAULT
+    config.DASHSCOPE_REALTIME_WS_BASE = (
+        os.getenv(DASHSCOPE_REALTIME_WS_BASE_ENV) or DASHSCOPE_REALTIME_WS_BASE_DEFAULT
+    ).rstrip("/")
+    config.DASHSCOPE_REALTIME_VOICE = os.getenv(DASHSCOPE_REALTIME_VOICE_ENV)
     config.REACHY_MINI_CUSTOM_PROFILE = LOCKED_PROFILE or os.getenv("REACHY_MINI_CUSTOM_PROFILE")
 
 
+def get_selected_backend() -> str:
+    """Return the selected realtime backend identifier."""
+    return _normalize_realtime_backend(getattr(config, "REALTIME_BACKEND", None))
+
+
 def get_available_voices() -> list[str]:
-    """Return the curated Hugging Face voice list."""
+    """Return the curated voice list for the selected realtime backend."""
+    if get_selected_backend() == DASHSCOPE_BACKEND:
+        return list(DASHSCOPE_AVAILABLE_VOICES)
     return list(HF_AVAILABLE_VOICES)
 
 
 def get_default_voice() -> str:
-    """Return the default Hugging Face voice."""
+    """Return the default voice for the selected realtime backend."""
+    if get_selected_backend() == DASHSCOPE_BACKEND:
+        configured = (getattr(config, "DASHSCOPE_REALTIME_VOICE", None) or "").strip()
+        if configured:
+            return configured
+        return DASHSCOPE_AVAILABLE_VOICES[0]
     return HF_DEFAULTS.voice
 
 

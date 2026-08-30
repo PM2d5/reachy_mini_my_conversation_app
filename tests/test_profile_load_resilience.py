@@ -21,9 +21,7 @@ from my_conversation_app.profile_store import write_profile
 def _reset_core_tools() -> None:
     """Drop the cached tool registry so each case reloads from its profile."""
     for module_name in list(sys.modules):
-        if module_name.startswith(
-            ("my_conversation_app.tools.", "my_conversation_app._external_tools.")
-        ):
+        if module_name.startswith(("my_conversation_app.tools.", "my_conversation_app._external_tools.")):
             sys.modules.pop(module_name, None)
     sys.modules.pop("my_conversation_app.tools.core_tools", None)
     importlib.reload(app_lifecycle)

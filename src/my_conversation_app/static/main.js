@@ -1,26 +1,57 @@
+const BACKEND_LABELS = {
+  huggingface: "Hugging Face realtime",
+  dashscope: "Alibaba DashScope (Qwen-Omni-Realtime)",
+};
+
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
-async function fetchWithTimeout(url, options = {}, timeoutMs = 2000) {
-  const controller = new AbortController();
-  const id = setTimeout(() => controller.abort(), timeoutMs);
-  try {
-    return await fetch(url, { ...options, signal: controller.signal });
-  } finally {
-    clearTimeout(id);
-  }
+function fetchStatusOnce() {
+  return new Promise((resolve, reject) => {
+    const protocol = location.protocol === "https:" ? "wss:" : "ws:";
+    let settled = false;
+    const socket = new WebSocket(`${protocol}//${location.host}/rpc`);
+    const cleanup = () => {
+      if (!settled) {
+        settled = true;
+        socket.close();
+      }
+    };
+    socket.onopen = () => {
+      socket.send(
+        JSON.stringify({
+          jsonrpc: "2.0",
+          id: 1,
+          method: "conversation.status",
+          params: {},
+        })
+      );
+    };
+    socket.onmessage = (event) => {
+      const message = JSON.parse(event.data);
+      if (message.id !== 1) return;
+      settled = true;
+      socket.close();
+      if (message.error) {
+        reject(new Error(message.error.message || "status_failed"));
+      } else {
+        resolve(message.result);
+      }
+    };
+    socket.onerror = () => {
+      cleanup();
+      reject(new Error("cannot reach /rpc"));
+    };
+  });
 }
 
 async function waitForStatus(timeoutMs = 15000) {
   const loadingText = document.querySelector("#loading p");
-  let attempts = 0;
   const deadline = Date.now() + timeoutMs;
+  let attempts = 0;
   while (true) {
     attempts += 1;
     try {
-      const url = new URL("/status", window.location.origin);
-      url.searchParams.set("_", Date.now().toString());
-      const resp = await fetchWithTimeout(url, {}, 2000);
-      if (resp.ok) return await resp.json();
+      return await fetchStatusOnce();
     } catch (e) {}
     if (loadingText) {
       loadingText.textContent = attempts > 8 ? "Starting backend…" : "Loading…";
@@ -30,107 +61,42 @@ async function waitForStatus(timeoutMs = 15000) {
   }
 }
 
-async function validateKey(key) {
-  const body = { openai_api_key: key };
-  const resp = await fetch("/validate_api_key", {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify(body),
-  });
-  const data = await resp.json().catch(() => ({}));
-  if (!resp.ok) {
-    throw new Error(data.error || "validation_failed");
-  }
-  return data;
-}
-
-async function saveKey(key) {
-  const body = { openai_api_key: key };
-  const resp = await fetch("/openai_api_key", {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify(body),
-  });
-  if (!resp.ok) {
-    const data = await resp.json().catch(() => ({}));
-    throw new Error(data.error || "save_failed");
-  }
-  return await resp.json();
-}
-
 function show(el, flag) {
   el.classList.toggle("hidden", !flag);
 }
 
-async function init() {
-  const loading = document.getElementById("loading");
-  const statusEl = document.getElementById("status");
-  const formPanel = document.getElementById("form-panel");
-  const configuredPanel = document.getElementById("configured");
-  const saveBtn = document.getElementById("save-btn");
-  const changeKeyBtn = document.getElementById("change-key-btn");
-  const input = document.getElementById("api-key");
-
-  show(loading, true);
-  show(formPanel, false);
-  show(configuredPanel, false);
-
-  const st = (await waitForStatus()) || { has_key: false };
-
-  if (st.has_key) {
-    show(configuredPanel, true);
-  } else {
-    show(formPanel, true);
-  }
-  show(loading, false);
-
-  changeKeyBtn.addEventListener("click", () => {
-    show(configuredPanel, false);
-    show(formPanel, true);
-    input.value = "";
-    statusEl.textContent = "";
-    statusEl.className = "status";
-  });
-
-  input.addEventListener("input", () => {
-    input.classList.remove("error");
-  });
-
-  saveBtn.addEventListener("click", async () => {
-    const key = input.value.trim();
-    if (!key) {
-      statusEl.textContent = "Please enter a valid key.";
-      statusEl.className = "status warn";
-      input.classList.add("error");
-      return;
-    }
-    statusEl.textContent = "Validating API key...";
-    statusEl.className = "status";
-    input.classList.remove("error");
-    try {
-      const validation = await validateKey(key);
-      if (!validation.valid) {
-        statusEl.textContent = "Invalid API key. Please check your key and try again.";
-        statusEl.className = "status error";
-        input.classList.add("error");
-        return;
-      }
-      statusEl.textContent = "Key valid! Saving...";
-      statusEl.className = "status ok";
-      await saveKey(key);
-      statusEl.textContent = "Saved. Reloading…";
-      statusEl.className = "status ok";
-      window.location.reload();
-    } catch (e) {
-      input.classList.add("error");
-      if (e.message === "invalid_api_key") {
-        statusEl.textContent = "Invalid API key. Please check your key and try again.";
-      } else {
-        statusEl.textContent = "Failed to validate/save key. Please try again.";
-      }
-      statusEl.className = "status error";
-    }
-  });
+function backendLabel(backend) {
+  return BACKEND_LABELS[backend] || backend;
 }
 
-window.addEventListener("DOMContentLoaded", init);
+async function init() {
+  const loading = document.getElementById("loading");
+  const readyPanel = document.getElementById("configured");
+  const guidancePanel = document.getElementById("form-panel");
+  const chip = document.getElementById("backend-chip");
+  const summary = document.getElementById("backend-summary");
+  const guidance = document.getElementById("backend-guidance");
+
+  show(loading, true);
+  show(readyPanel, false);
+  show(guidancePanel, false);
+
+  const status = await waitForStatus();
+
+  if (status && status.has_key) {
+    chip.textContent = backendLabel(status.backend);
+    summary.textContent = `The conversation app is running on ${backendLabel(status.backend)}. Speak to the robot to start a conversation.`;
+    show(readyPanel, true);
+  } else {
+    const backend = (status && status.backend) || "huggingface";
+    guidance.textContent =
+      backend === "dashscope"
+        ? "Set DASHSCOPE_API_KEY in the app's .env file, then restart the app."
+        : "The Hugging Face backend target is unavailable. Check HF_REALTIME_CONNECTION_MODE and HF_REALTIME_WS_URL in the app's .env file, then restart the app.";
+    show(guidancePanel, true);
+  }
+
+  show(loading, false);
+}
+
+init();

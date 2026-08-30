@@ -15,9 +15,7 @@ from my_conversation_app.profile_store import write_profile
 def _reload_core_tools() -> ModuleType:
     """Reload core_tools after config object has been patched."""
     for module_name in list(sys.modules):
-        if module_name.startswith(
-            ("my_conversation_app.tools.", "my_conversation_app._external_tools.")
-        ):
+        if module_name.startswith(("my_conversation_app.tools.", "my_conversation_app._external_tools.")):
             sys.modules.pop(module_name, None)
 
     sys.modules.pop("my_conversation_app.tools.core_tools", None)

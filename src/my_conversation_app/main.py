@@ -165,7 +165,19 @@ def run(
     )
 
     def build_handler(startup_voice: Optional[str] = None) -> ConversationHandler:
-        """Build a Hugging Face realtime handler for the current runtime config."""
+        """Build a realtime handler for the current runtime config."""
+        from my_conversation_app.config import DASHSCOPE_BACKEND, get_selected_backend
+
+        if get_selected_backend() == DASHSCOPE_BACKEND:
+            from my_conversation_app.dashscope_realtime import DashScopeRealtimeHandler
+
+            logger.info("Using DashScope realtime handler")
+            return DashScopeRealtimeHandler(
+                deps,
+                instance_path=instance_path,
+                startup_voice=startup_voice,
+            )
+
         from my_conversation_app.huggingface_realtime import HuggingFaceRealtimeHandler
 
         hf_connection_selection = get_hf_connection_selection()
