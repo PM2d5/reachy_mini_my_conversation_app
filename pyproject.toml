@@ -1,0 +1,73 @@
+[build-system]
+requires = [ "setuptools",]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "my_conversation_app"
+version = "1.0.1"
+description = ""
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = [ "huggingface-hub>=1.17.0", "httpx>=0.28.1", "python-dotenv", "openai==2.28.0", "reachy_mini_dances_library", "reachy-mini>=1.10.0rc5", "mcp>=1.27.1,<2",]
+[[project.authors]]
+name = "Pollen Robotics"
+email = "contact@pollen-robotics.com"
+
+[dependency-groups]
+dev = [ "allure-pytest==2.16.0", "pytest", "pytest-asyncio", "pytest-cov==7.1.0", "ruff==0.15.20", "mypy==2.2.0", "pre-commit",]
+
+[project.scripts]
+my-conversation-app = "my_conversation_app.main:main"
+
+[tool.uv]
+exclude-newer = "7 days"
+
+[tool.setuptools]
+include-package-data = true
+
+[tool.ruff]
+line-length = 119
+exclude = [ ".venv", "dist", "build", "**/__pycache__", "*.egg-info", ".mypy_cache", ".pytest_cache",]
+
+[tool.mypy]
+python_version = "3.12"
+files = [ "src/",]
+ignore_missing_imports = true
+strict = true
+show_error_codes = true
+warn_unused_ignores = true
+
+[project.entry-points.reachy_mini_apps]
+my_conversation_app = "my_conversation_app.main:MyConversationApp"
+
+[tool.uv.exclude-newer-package]
+reachy-mini = false
+reachy-mini-dances-library = false
+
+[tool.setuptools.package-dir]
+"" = "src"
+
+[tool.setuptools.package-data]
+reachy_talk_data = [ "profiles/**/*.md",]
+my_conversation_app = [ "static/**/*", ".env.example",]
+
+[tool.ruff.lint]
+select = [ "E", "F", "W", "I", "C4", "D",]
+ignore = [ "E501", "D100", "D203", "D213",]
+
+[tool.ruff.format]
+quote-style = "double"
+indent-style = "space"
+skip-magic-trailing-comma = false
+line-ending = "auto"
+
+[tool.setuptools.packages.find]
+where = [ "src",]
+
+[tool.ruff.lint.isort]
+length-sort = true
+lines-after-imports = 2
+no-lines-before = [ "standard-library", "local-folder",]
+known-local-folder = [ "my_conversation_app",]
+known-first-party = [ "reachy_mini", "reachy_mini_dances_library",]
+split-on-trailing-comma = true
