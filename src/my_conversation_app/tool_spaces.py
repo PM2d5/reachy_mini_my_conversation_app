@@ -57,7 +57,8 @@ PREINSTALLED_TOOL_SPACE_SPECS = {
             description=(
                 "Search the web for current information and return a short list of results (title, snippet, url). "
                 "Call this directly whenever the user asks to search, check the web, look something up, "
-                "find today's events, or learn what is happening now. Do not just say you'll look it up."
+                "find today's events, learn what is happening now, or check the weather forecast for any "
+                "day other than today. Do not just say you'll look it up."
             ),
             parameters_schema={
                 "type": "object",
@@ -108,9 +109,10 @@ PREINSTALLED_TOOL_SPACE_SPECS = {
                 "pollen_robotics_reachy_mini_weather_tool", "reachy_mini_weather_tool_get_weather"
             ),
             description=(
-                "Get today's weather for a place: current conditions, high and low temperature, and rain chance. "
-                "Call this directly whenever the user asks about the weather, forecast, or temperature for "
-                "somewhere. Do not just say you'll check."
+                "Get today's weather only for a place: current conditions, high and low temperature, and rain chance. "
+                "Call this directly whenever the user asks about today's weather or current temperature somewhere. "
+                "It accepts no date: for any other day's forecast, use the web search tool instead. "
+                "Do not just say you'll check."
             ),
             parameters_schema={
                 "type": "object",
