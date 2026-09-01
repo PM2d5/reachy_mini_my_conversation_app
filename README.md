@@ -34,6 +34,30 @@ DASHSCOPE_API_KEY=sk-...            # required; from Alibaba Model Studio
 Leave `REALTIME_BACKEND` unset (or `huggingface`) to keep the default backend.
 See `.env.example` for the full list.
 
+## Wake word listening
+
+By default (`REACHY_MINI_WAKE_WORD_ENABLED=1`) the app does not listen continuously.
+The first session behaves as before: Reachy greets you and listens. Once you say a
+goodbye ("再见", "拜拜", "goodbye", configurable) or stay silent for 5 minutes, the
+realtime session pauses and the mic only feeds an offline wake word detector
+(openWakeWord). Saying the wake word ("hey mycroft" by default) resumes the session
+with a fresh greeting.
+
+```bash
+# REACHY_MINI_WAKE_WORD_ENABLED=1                          # 0 keeps always-on listening
+# REACHY_MINI_WAKE_WORD_MODELS=hey_mycroft                 # comma-separated openWakeWord model names or .onnx/.tflite paths
+# REACHY_MINI_WAKE_WORD_THRESHOLD=0.5                      # 0..1, lower = more sensitive
+# REACHY_MINI_WAKE_WORD_ACTIVE_TIMEOUT_S=300               # idle exit delay, 0 disables
+# REACHY_MINI_GOODBYE_KEYWORDS=再见,拜拜,goodbye,bye-bye,bye bye
+```
+
+Pretrained models (hey_mycroft, hey_jarvis, alexa, ...) are downloaded automatically
+on first use. openWakeWord ships no Chinese pretrained models: to use a Chinese wake
+word, train a custom model (see the openWakeWord docs) and point
+`REACHY_MINI_WAKE_WORD_MODELS` at the model file. If no model can be loaded, the app
+logs a warning and falls back to always-on listening.
+
+
 Do not forget to customize:
 - this `README.md` file
 - the `index.html` file (Hugging Face Spaces landing page)

@@ -403,6 +403,26 @@ class HuggingFaceRealtimeHandler(ConversationHandler):
                 except Exception:
                     pass
 
+    async def pause_session(self) -> None:
+        """Close the realtime session while keeping the handler alive (wake word standby)."""
+        if self.connection is None:
+            return
+        try:
+            await self.connection.close()
+        except Exception:
+            logger.debug("Realtime connection already closed on pause", exc_info=True)
+        finally:
+            self.connection = None
+        logger.info("Realtime session paused; waiting for wake word")
+
+    async def resume_session(self) -> None:
+        """Prepare to reopen after a pause; the startup loop reconnects and re-greets.
+
+        The greeting flag is cleared so the reopened session greets the user again,
+        as the wake acknowledgement.
+        """
+        self._startup_greeting_sent = False
+
     async def _restart_session(self) -> None:
         """Force-close the current session and start a fresh one in background.
 

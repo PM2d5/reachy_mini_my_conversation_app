@@ -113,6 +113,14 @@ class ConversationHandler(AsyncStreamHandler, ABC):
         """Return whether the backend session/connection is currently open."""
         ...
 
+    async def pause_session(self) -> None:
+        """Close the realtime session while keeping the handler alive (standby)."""
+        logger.debug("Backend does not support session pause")
+
+    async def resume_session(self) -> None:
+        """Reopen a paused realtime session."""
+        logger.debug("Backend does not support session resume")
+
     @abstractmethod
     async def start_up(self) -> None:
         """Start the realtime handler."""

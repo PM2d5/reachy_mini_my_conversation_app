@@ -191,6 +191,65 @@ def _env_flag(name: str, default: bool = False) -> bool:
     return default
 
 
+WAKE_WORD_ENABLED_ENV = "REACHY_MINI_WAKE_WORD_ENABLED"
+WAKE_WORD_DUMP_DIR_ENV = "REACHY_MINI_WAKE_WORD_DUMP_DIR"
+
+
+def resolve_wake_word_dump_dir() -> Path | None:
+    """Read the debug dump directory for standby mic audio; None disables dumping."""
+    raw_value = (os.getenv(WAKE_WORD_DUMP_DIR_ENV) or "").strip()
+    return Path(raw_value) if raw_value else None
+
+
+WAKE_WORD_MODELS_ENV = "REACHY_MINI_WAKE_WORD_MODELS"
+WAKE_WORD_THRESHOLD_ENV = "REACHY_MINI_WAKE_WORD_THRESHOLD"
+WAKE_WORD_ACTIVE_TIMEOUT_S_ENV = "REACHY_MINI_WAKE_WORD_ACTIVE_TIMEOUT_S"
+GOODBYE_KEYWORDS_ENV = "REACHY_MINI_GOODBYE_KEYWORDS"
+
+DEFAULT_WAKE_WORD_MODELS = ("hey_mycroft",)
+DEFAULT_WAKE_WORD_THRESHOLD = 0.5
+DEFAULT_WAKE_WORD_ACTIVE_TIMEOUT_S = 300.0
+DEFAULT_GOODBYE_KEYWORDS = ("再见", "拜拜", "goodbye", "bye-bye", "bye bye")
+
+
+def _normalize_wake_word_models(value: str | None) -> tuple[str, ...]:
+    """Parse the comma-separated wake word model names or file paths."""
+    candidates = [item.strip() for item in (value or "").split(",") if item.strip()]
+    return tuple(candidates) or DEFAULT_WAKE_WORD_MODELS
+
+
+def resolve_wake_word_threshold() -> float:
+    """Read the wake word detection threshold from the environment."""
+    raw_value = (os.getenv(WAKE_WORD_THRESHOLD_ENV) or "").strip()
+    if not raw_value:
+        return DEFAULT_WAKE_WORD_THRESHOLD
+    try:
+        threshold = float(raw_value)
+    except ValueError:
+        logger.warning("Ignoring invalid %s=%r; using default.", WAKE_WORD_THRESHOLD_ENV, raw_value)
+        return DEFAULT_WAKE_WORD_THRESHOLD
+    return min(max(threshold, 0.0), 1.0)
+
+
+def resolve_wake_word_active_timeout_s() -> float:
+    """Read the active-listening idle timeout (seconds); <=0 disables it."""
+    raw_value = (os.getenv(WAKE_WORD_ACTIVE_TIMEOUT_S_ENV) or "").strip()
+    if not raw_value:
+        return DEFAULT_WAKE_WORD_ACTIVE_TIMEOUT_S
+    try:
+        timeout_s = float(raw_value)
+    except ValueError:
+        logger.warning("Ignoring invalid %s=%r; using default.", WAKE_WORD_ACTIVE_TIMEOUT_S_ENV, raw_value)
+        return DEFAULT_WAKE_WORD_ACTIVE_TIMEOUT_S
+    return max(timeout_s, 0.0)
+
+
+def _normalize_goodbye_keywords(value: str | None) -> tuple[str, ...]:
+    """Parse the comma-separated goodbye keywords that end active listening."""
+    keywords = tuple(item.strip().lower() for item in (value or "").split(",") if item.strip())
+    return keywords or DEFAULT_GOODBYE_KEYWORDS
+
+
 APP_TIMEOUT_MINUTES_ENV = "REACHY_MINI_APP_TIMEOUT_MINUTES"
 DEFAULT_APP_TIMEOUT_MINUTES = 1440.0
 
@@ -418,6 +477,11 @@ class Config:
     _tools_directory_env = os.getenv("REACHY_MINI_EXTERNAL_TOOLS_DIRECTORY")
     TOOLS_DIRECTORY = Path(_tools_directory_env) if _tools_directory_env else None
     AUTOLOAD_EXTERNAL_TOOLS = _env_flag("AUTOLOAD_EXTERNAL_TOOLS", default=False)
+    WAKE_WORD_ENABLED = _env_flag(WAKE_WORD_ENABLED_ENV, default=True)
+    WAKE_WORD_MODELS = _normalize_wake_word_models(os.getenv(WAKE_WORD_MODELS_ENV))
+    WAKE_WORD_THRESHOLD = resolve_wake_word_threshold()
+    WAKE_WORD_ACTIVE_TIMEOUT_S = resolve_wake_word_active_timeout_s()
+    GOODBYE_KEYWORDS = _normalize_goodbye_keywords(os.getenv(GOODBYE_KEYWORDS_ENV))
     REACHY_MINI_CUSTOM_PROFILE = LOCKED_PROFILE or os.getenv("REACHY_MINI_CUSTOM_PROFILE")
 
     logger.debug(f"Custom Profile: {REACHY_MINI_CUSTOM_PROFILE}")
@@ -523,6 +587,11 @@ def refresh_runtime_config_from_env() -> None:
     ).rstrip("/")
     config.DASHSCOPE_REALTIME_VOICE = os.getenv(DASHSCOPE_REALTIME_VOICE_ENV)
     config.REACHY_MINI_CUSTOM_PROFILE = LOCKED_PROFILE or os.getenv("REACHY_MINI_CUSTOM_PROFILE")
+    config.WAKE_WORD_ENABLED = _env_flag(WAKE_WORD_ENABLED_ENV, default=True)
+    config.WAKE_WORD_MODELS = _normalize_wake_word_models(os.getenv(WAKE_WORD_MODELS_ENV))
+    config.WAKE_WORD_THRESHOLD = resolve_wake_word_threshold()
+    config.WAKE_WORD_ACTIVE_TIMEOUT_S = resolve_wake_word_active_timeout_s()
+    config.GOODBYE_KEYWORDS = _normalize_goodbye_keywords(os.getenv(GOODBYE_KEYWORDS_ENV))
 
 
 def get_selected_backend() -> str:

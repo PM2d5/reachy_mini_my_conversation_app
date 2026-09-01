@@ -22,6 +22,7 @@ from my_conversation_app.config import (
     LOCKED_PROFILE,
     DASHSCOPE_BACKEND,
     HF_REALTIME_WS_URL_ENV,
+    WAKE_WORD_DUMP_DIR_ENV,
     HF_LOCAL_CONNECTION_MODE,
     HF_DEPLOYED_CONNECTION_MODE,
     HF_REALTIME_CONNECTION_MODE_ENV,
@@ -35,11 +36,13 @@ from my_conversation_app.config import (
     build_hf_direct_ws_url,
     has_hf_realtime_target,
     parse_hf_direct_target,
+    resolve_wake_word_dump_dir,
     get_hf_connection_selection,
     refresh_runtime_config_from_env,
 )
 from my_conversation_app.prompts import get_session_voice, get_session_instructions
 from my_conversation_app.streaming import AdditionalOutputs, audio_to_float32
+from my_conversation_app.audio.wake_word import WakeWordDetector
 from my_conversation_app.startup_settings import read_startup_settings, write_startup_settings
 from my_conversation_app.tools.core_tools import initialize_tools
 from my_conversation_app.tool_space_routes import register_tool_space_methods
@@ -129,6 +132,10 @@ class LocalStream:
         self._settings_initialized = False
         self._asyncio_loop = None
         self._mic_muted = False  # mic starts live; the UI toggles it via the settings API
+        # Wake word standby: the first session starts active (with the usual startup
+        # greeting); after an idle timeout or a goodbye keyword the app pauses the
+        # session and only re-enters active listening on a detected wake word.
+        self._standby = False
         self._backend_connection_state = "not_started"
         self._backend_error: str | None = None
         self._backend_retry_delay = BACKEND_RETRY_DELAY_SECONDS
@@ -163,6 +170,45 @@ class LocalStream:
                 "conversation.transcript",
                 {"role": role, "text": text, "final": final},
             )
+        if (
+            not self._standby
+            and config.WAKE_WORD_ENABLED
+            and role == "user"
+            and final
+            and self._is_goodbye_transcript(text)
+        ):
+            asyncio.create_task(self._enter_standby("goodbye_keyword"))
+
+    def _is_goodbye_transcript(self, text: str) -> bool:
+        """Return whether a user transcript contains a configured goodbye keyword."""
+        lowered = text.lower()
+        return any(keyword in lowered for keyword in config.GOODBYE_KEYWORDS)
+
+    async def _enter_standby(self, reason: str) -> None:
+        """Pause the realtime session and stop sending mic audio until a wake word."""
+        if self._standby or not config.WAKE_WORD_ENABLED:
+            return
+        self._standby = True
+        logger.info("Entering wake word standby (%s)", reason)
+        self._emit_phase("standby", reason)
+        self._drain_output_queue()
+        try:
+            self.handler.deps.movement_manager.set_listening(False)
+        except Exception:
+            logger.debug("Could not reset listening state on standby", exc_info=True)
+        await self.handler.pause_session()
+
+    async def _wake_from_standby(self) -> None:
+        """Resume the realtime session (it greets again) and reopen the mic path."""
+        self._standby = False
+        self.handler.last_activity_time = time.monotonic()
+        self._emit_phase("active", "wake_word")
+        await self.handler.resume_session()
+
+    def _active_idle_expired(self) -> bool:
+        """Return whether active listening has been silent past the configured timeout."""
+        timeout_s = config.WAKE_WORD_ACTIVE_TIMEOUT_S
+        return timeout_s > 0 and time.monotonic() - self.handler.last_activity_time > timeout_s
 
     # Audio level meter for the client orb. RMS is scaled into a visible 0..1
     # range and capped to ~15 Hz so it stays light on the DataChannel.
@@ -712,6 +758,11 @@ class LocalStream:
                 await self._sleep_or_restart_requested(0.5)
                 continue
 
+            # Standby owns session lifecycle: stay paused until a wake word resumes it.
+            if self._standby:
+                await self._sleep_or_restart_requested(0.5)
+                continue
+
             self._set_backend_connection_state("connecting")
             try:
                 await self.handler.start_up()
@@ -878,16 +929,56 @@ class LocalStream:
                 break
 
     async def record_loop(self) -> None:
-        """Read mic frames from the recorder and forward them to the handler."""
+        """Read mic frames from the recorder and forward them to the handler.
+
+        With wake word mode enabled, mic audio goes to the wake word detector while
+        in standby; only active-listening frames reach the handler.
+        """
         input_sample_rate = self._robot.media.get_input_audio_samplerate()
         logger.debug(f"Audio recording started at {input_sample_rate} Hz")
+        detector = self._start_wake_word_detector()
 
         while not self._stop_event.is_set():
             audio_frame = self._robot.media.get_audio_sample()
             if audio_frame is not None and not self._mic_muted:
-                await self.handler.receive((input_sample_rate, audio_frame))
+                if self._standby:
+                    self._detect_wake_word(detector, input_sample_rate, audio_frame)
+                elif self._active_idle_expired():
+                    await self._enter_standby("idle_timeout")
+                else:
+                    await self.handler.receive((input_sample_rate, audio_frame))
                 self._emit_level("user", audio_frame)
             await asyncio.sleep(0)  # avoid busy loop
+
+    def _start_wake_word_detector(self) -> WakeWordDetector | None:
+        """Load the wake word detector; degrade to always-on listening if unavailable."""
+        if not config.WAKE_WORD_ENABLED:
+            return None
+        dump_dir = resolve_wake_word_dump_dir()
+        detector = WakeWordDetector(
+            dump_path=dump_dir / "wake_word_standby_mic.wav" if dump_dir is not None else None,
+        )
+        if not detector.available:
+            logger.warning("Wake word detection unavailable; staying in always-on listening mode")
+            return None
+        if dump_dir is None:
+            logger.info(
+                "Wake word mic dump disabled; set %s to capture standby audio",
+                WAKE_WORD_DUMP_DIR_ENV,
+            )
+        logger.info("Wake word standby armed; say the wake word to start listening")
+        return detector
+
+    def _detect_wake_word(self, detector: WakeWordDetector | None, sample_rate: int, audio_frame: Any) -> None:
+        """Run one frame through the detector and wake the session on a hit."""
+        if detector is None:
+            return
+        wake_word = detector.predict(sample_rate, audio_frame)
+        if wake_word is not None and self._standby:
+            # Leave standby synchronously so trailing frames cannot queue a second wake.
+            self._standby = False
+            logger.info("Wake word detected: %s", wake_word)
+            asyncio.create_task(self._wake_from_standby())
 
     async def play_loop(self) -> None:
         """Fetch outputs from the handler: log text and play audio frames."""
