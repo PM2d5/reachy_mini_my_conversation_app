@@ -8,7 +8,16 @@ version = "1.0.1"
 description = ""
 readme = "README.md"
 requires-python = ">=3.11"
-dependencies = [ "huggingface-hub>=1.17.0", "httpx>=0.28.1", "python-dotenv", "openai==2.28.0", "reachy_mini_dances_library", "reachy-mini>=1.10.0rc5", "mcp>=1.27.1,<2",]
+dependencies = [
+ "huggingface-hub>=1.17.0",
+ "httpx>=0.28.1",
+ "python-dotenv",
+ "openai==2.28.0",
+ "reachy_mini_dances_library",
+ "reachy-mini>=1.10.0rc5",
+ "mcp>=1.27.1,<2",
+ "openwakeword>=0.6.0",
+]
 [[project.authors]]
 name = "Pollen Robotics"
 email = "contact@pollen-robotics.com"
@@ -21,6 +30,10 @@ my-conversation-app = "my_conversation_app.main:main"
 
 [tool.uv]
 exclude-newer = "7 days"
+# openwakeword 0.6.0 outputs all-zero scores with onnxruntime>=1.27 (verified against
+# its own test clips); reachy-mini's onnx models run fine on 1.26. Remove once
+# openwakeword releases an onnxruntime>=1.27 fix.
+override-dependencies = ["onnxruntime<1.27"]
 
 [tool.setuptools]
 include-package-data = true
