@@ -194,6 +194,9 @@ def _env_flag(name: str, default: bool = False) -> bool:
 WAKE_WORD_ENABLED_ENV = "REACHY_MINI_WAKE_WORD_ENABLED"
 WAKE_WORD_DUMP_DIR_ENV = "REACHY_MINI_WAKE_WORD_DUMP_DIR"
 
+# Custom "hi reachy" model trained locally with openWakeWord's automated pipeline.
+BUNDLED_WAKE_WORD_MODEL = str(Path(__file__).parent / "audio" / "models" / "hi_reachy.onnx")
+
 
 def resolve_wake_word_dump_dir() -> Path | None:
     """Read the debug dump directory for standby mic audio; None disables dumping."""
@@ -206,7 +209,7 @@ WAKE_WORD_THRESHOLD_ENV = "REACHY_MINI_WAKE_WORD_THRESHOLD"
 WAKE_WORD_ACTIVE_TIMEOUT_S_ENV = "REACHY_MINI_WAKE_WORD_ACTIVE_TIMEOUT_S"
 GOODBYE_KEYWORDS_ENV = "REACHY_MINI_GOODBYE_KEYWORDS"
 
-DEFAULT_WAKE_WORD_MODELS = ("hey_mycroft",)
+DEFAULT_WAKE_WORD_MODELS = (BUNDLED_WAKE_WORD_MODEL,)
 DEFAULT_WAKE_WORD_THRESHOLD = 0.5
 DEFAULT_WAKE_WORD_ACTIVE_TIMEOUT_S = 300.0
 DEFAULT_GOODBYE_KEYWORDS = ("再见", "拜拜", "goodbye", "bye-bye", "bye bye")

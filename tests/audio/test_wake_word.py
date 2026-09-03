@@ -138,6 +138,14 @@ def test_resolve_wake_word_active_timeout_s(monkeypatch: pytest.MonkeyPatch, raw
     assert config.resolve_wake_word_active_timeout_s() == expected
 
 
+def test_default_wake_word_model_is_bundled() -> None:
+    """The default wake word points at the bundled, shipped model file."""
+    from pathlib import Path
+
+    for entry in config.DEFAULT_WAKE_WORD_MODELS:
+        assert Path(entry).is_file(), f"bundled wake word model missing: {entry}"
+
+
 def test_normalize_wake_word_models_and_goodbye_keywords() -> None:
     """Model lists and goodbye keywords split on commas, trimming blanks."""
     assert config._normalize_wake_word_models(" a.onnx, hey_mycroft , ") == ("a.onnx", "hey_mycroft")
