@@ -4,6 +4,7 @@ import logging
 from pathlib import Path
 
 import numpy as np
+import onnxruntime
 from numpy.typing import NDArray
 from openwakeword.model import Model as OpenWakeWordModel
 from openwakeword.utils import download_models
@@ -71,7 +72,15 @@ class WakeWordDetector:
             self._model = None
             return
         self.available = True
-        logger.info("Wake word detector ready: models=%s threshold=%.2f", self._model_names, self._threshold)
+        # The loaded onnxruntime matters: openwakeword 0.6.0 returns all-zero scores
+        # on onnxruntime>=1.27, which PYTHONPATH-injected environments can silently pick up.
+        logger.info(
+            "Wake word detector ready: models=%s threshold=%.2f (onnxruntime %s from %s)",
+            self._model_names,
+            self._threshold,
+            onnxruntime.__version__,
+            onnxruntime.__file__,
+        )
 
     def _build_model(self) -> OpenWakeWordModel:
         try:
