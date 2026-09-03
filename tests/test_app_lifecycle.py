@@ -2,8 +2,9 @@ from types import SimpleNamespace
 from unittest.mock import MagicMock, call
 
 import numpy as np
+import pytest
 
-from reachy_mini.reachy_mini import SLEEP_HEAD_POSE
+from reachy_mini.reachy_mini import SLEEP_HEAD_POSE, SLEEP_ANTENNAS_JOINT_POSITIONS
 from my_conversation_app import app_lifecycle
 from my_conversation_app.tools.core_tools import ToolDependencies
 
@@ -58,6 +59,32 @@ def test_wake_up_if_sleeping_skips_non_sleep_head_pose() -> None:
     robot.get_current_joint_positions.assert_not_called()
     robot.enable_motors.assert_not_called()
     robot.wake_up.assert_not_called()
+
+
+def test_goto_sleep_moves_straight_to_sleep_pose(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Shutdown must reach the sleep pose directly instead of detouring through neutral."""
+    monkeypatch.setattr(app_lifecycle.time, "sleep", MagicMock())
+    robot = MagicMock()
+
+    app_lifecycle.goto_sleep_from_current_pose(robot, MagicMock())
+
+    robot.media.play_sound.assert_called_once_with("go_sleep.wav")
+    robot.goto_sleep.assert_not_called()
+    robot.goto_target.assert_called_once_with(
+        head=SLEEP_HEAD_POSE, antennas=SLEEP_ANTENNAS_JOINT_POSITIONS, duration=2.0
+    )
+    app_lifecycle.time.sleep.assert_called_once_with(app_lifecycle._SLEEP_SOUND_TAIL_S)
+
+
+def test_goto_sleep_continues_without_the_sound(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A failed sleep sound must not block the move to the sleep pose."""
+    monkeypatch.setattr(app_lifecycle.time, "sleep", MagicMock())
+    robot = MagicMock()
+    robot.media.play_sound.side_effect = RuntimeError("no sound backend")
+
+    app_lifecycle.goto_sleep_from_current_pose(robot, MagicMock())
+
+    robot.goto_target.assert_called_once()
 
 
 def test_run_go_to_sleep_tool_uses_runtime_callback() -> None:

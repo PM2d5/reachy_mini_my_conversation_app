@@ -246,7 +246,7 @@ def run(
             movement_manager.stop(reset_to_neutral=False)
 
             try:
-                robot.goto_sleep()
+                app_lifecycle.goto_sleep_from_current_pose(robot, logger)
             except Exception as e:
                 sleep_error = f"{type(e).__name__}: {e}"
                 logger.error("Failed to move Reachy Mini to sleep pose: %s", e)
@@ -338,13 +338,22 @@ def run(
 
         # Stop the motion writes without changing the robot's posture. If
         # the shutdown came from the voice go_to_sleep tool the robot is
-        # already in the sleep pose; on a plain stop it stays awake and
-        # the daemon returns it to neutral once the process exits.
+        # already in the sleep pose; on a plain stop while active it stays
+        # awake and the daemon returns it to neutral once the process exits.
         movement_manager.stop(reset_to_neutral=False)
         try:
             robot.disable_wobbling()
         except Exception as e:
             logger.debug(f"Error disabling wobbling during shutdown: {e}")
+
+        # Stopped from outside while in wake-word standby: go straight from the
+        # tuck into the sleep pose, else the daemon walks the head up to zero
+        # and back down into sleep. The go_to_sleep paths already handled it.
+        if stream_manager._standby and not go_to_sleep_requested.is_set():
+            try:
+                app_lifecycle.goto_sleep_from_current_pose(robot, logger)
+            except Exception as e:
+                logger.error("Could not reach the sleep pose from standby on stop: %s", e)
 
         # Ensure media is explicitly closed before disconnecting
         try:

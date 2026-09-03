@@ -1,5 +1,6 @@
 """Helpers for app startup and shutdown lifecycle behavior."""
 
+import time
 import asyncio
 import logging
 import urllib.error
@@ -10,7 +11,7 @@ import numpy as np
 import numpy.typing as npt
 
 from reachy_mini import ReachyMini
-from reachy_mini.reachy_mini import SLEEP_HEAD_POSE
+from reachy_mini.reachy_mini import SLEEP_HEAD_POSE, SLEEP_ANTENNAS_JOINT_POSITIONS
 from reachy_mini.utils.interpolation import distance_between_poses
 from my_conversation_app.config import config, set_custom_profile
 from my_conversation_app.profile_store import DEFAULT_PROFILE_NAME, migrate_legacy_profiles
@@ -22,6 +23,9 @@ _STOP_CURRENT_APP_PATH = "/api/apps/stop-current-app"
 _STOP_CURRENT_APP_TIMEOUT_S = 2.0
 _SLEEP_HEAD_TRANSLATION_TOLERANCE_M = 0.05
 _SLEEP_HEAD_ROTATION_TOLERANCE_RAD = 0.35
+# play_sound returns immediately; this lets the 3.6 s go_sleep.wav finish before teardown,
+# mirroring the trailing wait inside robot.goto_sleep().
+_SLEEP_SOUND_TAIL_S = 2.0
 
 
 def initialize_tools_with_default_fallback(
@@ -122,6 +126,18 @@ def wake_up_if_sleeping(robot: ReachyMini, logger: logging.Logger) -> bool:
         logger.error("Failed to run wake-up movement: %s", e)
         return False
     return True
+
+
+def goto_sleep_from_current_pose(robot: ReachyMini, logger: logging.Logger) -> None:
+    """Move straight from the live pose to the sleep pose, without detouring through neutral."""
+    # robot.goto_sleep() first returns to the init pose when far from it, so from e.g. the
+    # standby tuck the head would rise before falling asleep; goto_target interpolates directly.
+    try:
+        robot.media.play_sound("go_sleep.wav")
+    except Exception as e:
+        logger.debug("Could not play the sleep sound: %s", e)
+    robot.goto_target(head=SLEEP_HEAD_POSE, antennas=SLEEP_ANTENNAS_JOINT_POSITIONS, duration=2.0)
+    time.sleep(_SLEEP_SOUND_TAIL_S)
 
 
 def run_go_to_sleep_tool(deps: ToolDependencies, logger: logging.Logger) -> dict[str, object]:
