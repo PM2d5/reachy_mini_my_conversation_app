@@ -75,8 +75,9 @@ These are the cleanups we make in review over and over. Write code that wouldn't
 
 - **One README, one source of truth.** Never create another `README.md`. Update the existing root `README.md`.
 - **Keep the README in sync.** If your change touches anything it documents (CLI flags, config vars, tools, install steps, behavior), update `README.md` in the same PR.
+- **Keep the feature inventory in sync.** [`docs/features.md`](docs/features.md) is the authoritative inventory of everything the app currently does (maintained in Chinese on purpose). Any change that adds, removes, or alters user-visible behavior — tools, CLI flags, env vars, JSON-RPC methods, web views, backends, wake/idle/sleep policy, profiles, memory — updates `docs/features.md` in the same PR, including its "last verified" header.
 - **Flag when the architecture diagram needs updating.** If your change alters the architecture, call it out in the PR. The diagram is generated: `docs/scheme.mmd` is the Mermaid source and `README.md` embeds the rendered `docs/assets/conversation_app_arch.svg`. It can only be updated by editing `scheme.mmd` and regenerating the SVG, so flag the need rather than hand-editing the SVG.
-- **Don't add Markdown files under `docs/`.** Extra docs in this repo go stale fast. If a feature genuinely needs its own document, it belongs in the [`reachy_mini` docs folder](https://github.com/pollen-robotics/reachy_mini/tree/main/docs), which syncs to the docs website. Flag the need and suggest a separate PR to `reachy_mini`, and only when a standalone document is truly necessary.
+- **Don't add Markdown files under `docs/`.** Extra docs in this repo go stale fast. If a feature genuinely needs its own document, it belongs in the [`reachy_mini` docs folder](https://github.com/pollen-robotics/reachy_mini/tree/main/docs), which syncs to the docs website. Flag the need and suggest a separate PR to `reachy_mini`, and only when a standalone document is truly necessary. `docs/features.md` (the feature inventory above) is the one sanctioned exception; don't add others.
 
 ---
 

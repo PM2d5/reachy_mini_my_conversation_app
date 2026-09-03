@@ -17,6 +17,13 @@ Forked from the Reachy Mini conversation app.
 Customize `profiles/_my_conversation_app_locked_profile/profile.md` to change the assistant instructions and enabled tools.
 Add custom tools under `src/my_conversation_app/tools/` by subclassing `Tool`.
 
+## Feature inventory
+
+[`docs/features.md`](docs/features.md) is the always-current inventory of everything this app does:
+conversation backends, wake word and idle policy, every LLM tool, the profile system,
+the web UI and its JSON-RPC API, and all configuration variables. Update it in the same
+PR whenever a feature changes (see `AGENTS.md`).
+
 ## Chinese realtime backend (DashScope)
 
 This fork can swap the default Hugging Face realtime backend for Alibaba
