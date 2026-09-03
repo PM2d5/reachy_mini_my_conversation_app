@@ -40,6 +40,7 @@ coverage.xml
 
 # AI tooling
 .claude/
+.zcode/
 
 # Security
 *.key
