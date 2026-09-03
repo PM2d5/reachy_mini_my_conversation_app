@@ -46,6 +46,37 @@ WAKE_ACKNOWLEDGEMENT_PROMPTS = (
     ),
 )
 
+# Same memoryless-session problem as wake acks: the app rotates these wait-line
+# styles itself. Each entry is a style, not a literal line, so every voicing
+# stays natural while never repeating the previous flavor.
+ASSISTANT_WAIT_ACKNOWLEDGEMENT_PROMPTS = (
+    (
+        "You just started asking your home assistant for help and the user must wait. "
+        "Say one short spoken line — under ten words — telling the user to hang on "
+        "while you check, in the language you speak. Casual, no explanations."
+    ),
+    (
+        "You just started asking your home assistant for help and the user must wait. "
+        "Say one short playful spoken line — under ten words — as if handing the "
+        "question to a coworker, in the language you speak. No explanations."
+    ),
+    (
+        "You just started asking your home assistant for help and the user must wait. "
+        "Say one short brisk spoken line — under ten words — brisk and efficient, "
+        "like a professional taking a task, in the language you speak. No explanations."
+    ),
+    (
+        "You just started asking your home assistant for help and the user must wait. "
+        "Say one short self-aware spoken line — under ten words — with light robot "
+        "humor about needing a moment, in the language you speak. No explanations."
+    ),
+    (
+        "You just started asking your home assistant for help and the user must wait. "
+        "Say one short warm spoken line — under ten words — reassuring the user the "
+        "answer is coming, in the language you speak. No explanations."
+    ),
+)
+
 
 def _active_profile() -> ProfileDefinition:
     return read_profile(config.REACHY_MINI_CUSTOM_PROFILE)

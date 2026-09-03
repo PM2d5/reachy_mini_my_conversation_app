@@ -23,6 +23,7 @@ def _make_stream(monkeypatch: pytest.MonkeyPatch) -> tuple[LocalStream, MagicMoc
     handler.receive = AsyncMock()
     handler.pause_session = AsyncMock()
     handler.resume_session = AsyncMock()
+    handler.assistant_wait_active = MagicMock(return_value=False)
     handler.last_activity_time = time.monotonic()
     handler.deps.movement_manager.set_listening = MagicMock()
     frame = np.zeros(1280, dtype=np.int16)
@@ -145,3 +146,18 @@ async def test_idle_expiry_pauses_session(monkeypatch: pytest.MonkeyPatch) -> No
 
     handler.pause_session.assert_awaited_once()
     assert stream._standby is True
+
+
+@pytest.mark.asyncio
+async def test_idle_expiry_waits_out_assistant_query(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The active idle exit stays suspended while an assistant query is in flight."""
+    stream, handler = _make_stream(monkeypatch)
+    handler.assistant_wait_active = MagicMock(return_value=True)
+    handler.last_activity_time = time.monotonic() - 301.0
+
+    record_task = asyncio.create_task(stream.record_loop())
+    await asyncio.sleep(0.05)
+    stream._stop_event.set()
+    await record_task
+
+    handler.pause_session.assert_not_awaited()

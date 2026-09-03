@@ -212,6 +212,9 @@ class LocalStream:
 
     def _active_idle_expired(self) -> bool:
         """Return whether active listening has been silent past the configured timeout."""
+        if self.handler.assistant_wait_active():
+            # A blocking assistant query is pending; the wait itself counts as activity.
+            return False
         timeout_s = config.WAKE_WORD_ACTIVE_TIMEOUT_S
         return timeout_s > 0 and time.monotonic() - self.handler.last_activity_time > timeout_s
 

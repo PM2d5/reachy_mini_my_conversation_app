@@ -40,6 +40,7 @@ from my_conversation_app.config import (
 )
 from my_conversation_app.prompts import (
     WAKE_ACKNOWLEDGEMENT_PROMPTS,
+    ASSISTANT_WAIT_ACKNOWLEDGEMENT_PROMPTS,
     get_session_voice,
     get_session_instructions,
     get_session_greeting_prompt,
@@ -166,8 +167,12 @@ class HuggingFaceRealtimeHandler(ConversationHandler):
         self._wake_ack_pending = False
         # Random start so the first wake after every boot does not always land on the same flavor.
         self._wake_ack_index = random.randrange(len(WAKE_ACKNOWLEDGEMENT_PROMPTS))
+        self._wait_ack_index = random.randrange(len(ASSISTANT_WAIT_ACKNOWLEDGEMENT_PROMPTS))
         self._in_flight_tool_calls: set[str] = set()
         self._tool_batch_needs_response = False
+        # Call ids of tools that must be waited out in silence (ask_assistant):
+        # mic audio is dropped while one runs, so bystander speech never triggers a turn.
+        self._silent_wait_call_ids: set[str] = set()
 
     @staticmethod
     def _sanitize_tool_result_for_model(tool_name: str, tool_result: dict[str, Any]) -> dict[str, Any]:
@@ -608,8 +613,34 @@ class HuggingFaceRealtimeHandler(ConversationHandler):
 
                 sent = True
 
+    async def _clear_input_audio_buffer(self) -> None:
+        """Flush uncommitted user audio so a silent wait starts from an empty buffer."""
+        if not self.connection:
+            return
+        try:
+            await self.connection.input_audio_buffer.clear()
+        except ConnectionClosedError:
+            logger.debug("Could not clear input buffer; connection already closed")
+
+    def assistant_wait_active(self) -> bool:
+        """Return whether a blocking assistant query is currently being waited out."""
+        return bool(self._silent_wait_call_ids)
+
+    async def _announce_assistant_wait(self) -> None:
+        """Voice the rotating wait line when a blocking assistant query starts."""
+        prompt = ASSISTANT_WAIT_ACKNOWLEDGEMENT_PROMPTS[
+            self._wait_ack_index % len(ASSISTANT_WAIT_ACKNOWLEDGEMENT_PROMPTS)
+        ]
+        self._wait_ack_index += 1
+        try:
+            await self.say(prompt)
+        except Exception as e:
+            logger.warning("Could not announce assistant wait: %s", e)
+
     async def _handle_tool_result(self, completed_tool: ToolNotification) -> None:
         """Process the result of a tool call."""
+        if isinstance(completed_tool.id, str):
+            self._silent_wait_call_ids.discard(completed_tool.id)
         if completed_tool.error is not None:
             logger.error(
                 "Tool '%s' (id=%s) failed with error: %s",
@@ -768,6 +799,10 @@ class HuggingFaceRealtimeHandler(ConversationHandler):
 
             # Reset the partial-transcript accumulator for each new session
             self.input_transcript_chunks_by_item = InputTranscriptChunksByItem()
+            # A fresh session ends any stale silent wait and starts a clean transcript.
+            self._silent_wait_call_ids.clear()
+            if self.deps.conversation_history is not None:
+                self.deps.conversation_history.new_session()
 
             # Manage events received from the realtime server.
             self.connection = conn
@@ -924,6 +959,12 @@ class HuggingFaceRealtimeHandler(ConversationHandler):
                             continue
 
                         self._in_flight_tool_calls.add(call_id)
+                        started_tool = core_tools.get_tools().get(tool_name)
+                        if started_tool is not None and started_tool.silence_user_audio_while_running:
+                            self._silent_wait_call_ids.add(call_id)
+                            await self._clear_input_audio_buffer()
+                            if len(self._silent_wait_call_ids) == 1:
+                                await self._announce_assistant_wait()
                         background_tool = await self.tool_manager.start_tool(
                             call_id=call_id,
                             tool_call_routine=ToolCallRoutine(
@@ -1001,6 +1042,11 @@ class HuggingFaceRealtimeHandler(ConversationHandler):
 
         """
         if not self.connection:
+            return
+
+        if self._silent_wait_call_ids:
+            # Waiting out a blocking assistant tool: drop mic audio so family
+            # chatter around the robot cannot trigger a model turn.
             return
 
         _, audio_frame = frame

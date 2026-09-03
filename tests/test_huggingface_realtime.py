@@ -3,6 +3,7 @@ import asyncio
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock
 
+import numpy as np
 import pytest
 
 import my_conversation_app.conversation_handler as conv_mod
@@ -596,3 +597,57 @@ def test_time_tool_rewrite_skips_failed_results_and_other_tools() -> None:
         )
         is other
     )
+
+
+@pytest.mark.asyncio
+async def test_receive_drops_audio_while_assistant_wait_active() -> None:
+    """Mic audio is dropped while a blocking ask_assistant call is in flight."""
+    handler = HuggingFaceRealtimeHandler(ToolDependencies(reachy_mini=MagicMock(), movement_manager=MagicMock()))
+    handler.connection = AsyncMock()
+    frame = (16000, np.zeros(160, dtype=np.int16))
+
+    handler._silent_wait_call_ids.add("call-1")
+    await handler.receive(frame)
+    handler.connection.input_audio_buffer.append.assert_not_called()
+    assert handler.assistant_wait_active() is True
+
+    handler._silent_wait_call_ids.discard("call-1")
+    await handler.receive(frame)
+    handler.connection.input_audio_buffer.append.assert_called_once()
+
+
+@pytest.mark.asyncio
+async def test_assistant_tool_result_ends_silent_wait() -> None:
+    """A completed ask_assistant call releases the silent wait whatever the outcome."""
+    handler = HuggingFaceRealtimeHandler(ToolDependencies(reachy_mini=MagicMock(), movement_manager=MagicMock()))
+    handler.connection = AsyncMock()
+    handler._silent_wait_call_ids.add("call-1")
+
+    notification = ToolNotification(
+        id="call-1",
+        tool_name="ask_assistant",
+        is_idle_tool_call=False,
+        status=ToolState.COMPLETED,
+        result={"ok": True, "reply": "已预约"},
+    )
+    await handler._handle_tool_result(notification)
+
+    assert handler.assistant_wait_active() is False
+
+
+@pytest.mark.asyncio
+async def test_assistant_wait_acknowledgement_rotates_styles(monkeypatch: Any) -> None:
+    """Each blocking assistant query announces a different wait-line style."""
+    handler = HuggingFaceRealtimeHandler(ToolDependencies(reachy_mini=MagicMock(), movement_manager=MagicMock()))
+    spoken = AsyncMock()
+    monkeypatch.setattr(handler, "say", spoken)
+    handler._wait_ack_index = 0
+
+    await handler._announce_assistant_wait()
+    await handler._announce_assistant_wait()
+
+    phrases = [call.args[0] for call in spoken.await_args_list]
+    assert phrases == [
+        hf_mod.ASSISTANT_WAIT_ACKNOWLEDGEMENT_PROMPTS[0],
+        hf_mod.ASSISTANT_WAIT_ACKNOWLEDGEMENT_PROMPTS[1],
+    ]

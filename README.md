@@ -41,6 +41,26 @@ DASHSCOPE_API_KEY=sk-...            # required; from Alibaba Model Studio
 Leave `REALTIME_BACKEND` unset (or `huggingface`) to keep the default backend.
 See `.env.example` for the full list.
 
+## Home assistant delegation (OpenClaw)
+
+The `ask_assistant` tool lets the model delegate complex tasks — real-time lookups
+(prices, tickets, opening hours, news), calendar/reminders, family memory questions,
+multi-step planning — to an [OpenClaw](https://openclaw.ai) gateway on the home
+network. While a query is in flight the mic is muted so bystander chatter never
+triggers a turn, the reply is cleaned of markdown/emoji and relayed faithfully,
+and dangerous requests (delete files, uninstall, send messages, spend money) are
+refused before any request is sent. Configure in `.env`:
+
+```bash
+OPENCLAW_API_URL=http://192.168.0.152:18789/v1/chat/completions   # gateway chat completions
+OPENCLAW_API_TOKEN=...                                            # gateway bearer token
+# OPENCLAW_TIMEOUT_S=60                                           # HTTP timeout, default 60
+```
+
+Unset `OPENCLAW_API_URL`/`OPENCLAW_API_TOKEN` to hide the tool from the model.
+Only the `default` profile enables it; copy the `ask_assistant` entry into another
+profile's `default_tools` to enable it there.
+
 ## Wake word listening
 
 By default (`REACHY_MINI_WAKE_WORD_ENABLED=1`) the app does not listen continuously.

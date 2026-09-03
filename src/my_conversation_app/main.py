@@ -126,7 +126,7 @@ def run(
     )
 
     from my_conversation_app.console import LocalStream
-    from my_conversation_app.tools.core_tools import ToolDependencies
+    from my_conversation_app.tools.core_tools import ToolDependencies, ConversationHistory
     from my_conversation_app.conversation_handler import ConversationHandler
 
     if robot is None:
@@ -162,6 +162,7 @@ def run(
         movement_manager=movement_manager,
         instance_path=instance_path,
         camera_enabled=not args.no_camera,
+        conversation_history=ConversationHistory(),
     )
 
     def build_handler(startup_voice: Optional[str] = None) -> ConversationHandler:

@@ -209,6 +209,25 @@ WAKE_WORD_THRESHOLD_ENV = "REACHY_MINI_WAKE_WORD_THRESHOLD"
 WAKE_WORD_ACTIVE_TIMEOUT_S_ENV = "REACHY_MINI_WAKE_WORD_ACTIVE_TIMEOUT_S"
 GOODBYE_KEYWORDS_ENV = "REACHY_MINI_GOODBYE_KEYWORDS"
 
+OPENCLAW_API_URL_ENV = "OPENCLAW_API_URL"
+OPENCLAW_API_TOKEN_ENV = "OPENCLAW_API_TOKEN"
+OPENCLAW_TIMEOUT_S_ENV = "OPENCLAW_TIMEOUT_S"
+DEFAULT_OPENCLAW_TIMEOUT_S = 60.0
+
+
+def resolve_openclaw_timeout_s() -> float:
+    """Read the OpenClaw HTTP timeout (seconds); non-positive values fall back to the default."""
+    raw_value = (os.getenv(OPENCLAW_TIMEOUT_S_ENV) or "").strip()
+    if not raw_value:
+        return DEFAULT_OPENCLAW_TIMEOUT_S
+    try:
+        timeout_s = float(raw_value)
+    except ValueError:
+        logger.warning("Ignoring invalid %s=%r; using default.", OPENCLAW_TIMEOUT_S_ENV, raw_value)
+        return DEFAULT_OPENCLAW_TIMEOUT_S
+    return timeout_s if timeout_s > 0 else DEFAULT_OPENCLAW_TIMEOUT_S
+
+
 DEFAULT_WAKE_WORD_MODELS = (BUNDLED_WAKE_WORD_MODEL,)
 DEFAULT_WAKE_WORD_THRESHOLD = 0.5
 DEFAULT_WAKE_WORD_ACTIVE_TIMEOUT_S = 300.0
@@ -485,6 +504,9 @@ class Config:
     WAKE_WORD_THRESHOLD = resolve_wake_word_threshold()
     WAKE_WORD_ACTIVE_TIMEOUT_S = resolve_wake_word_active_timeout_s()
     GOODBYE_KEYWORDS = _normalize_goodbye_keywords(os.getenv(GOODBYE_KEYWORDS_ENV))
+    OPENCLAW_API_URL = (os.getenv(OPENCLAW_API_URL_ENV) or "").strip()
+    OPENCLAW_API_TOKEN = os.getenv(OPENCLAW_API_TOKEN_ENV)
+    OPENCLAW_TIMEOUT_S = resolve_openclaw_timeout_s()
     REACHY_MINI_CUSTOM_PROFILE = LOCKED_PROFILE or os.getenv("REACHY_MINI_CUSTOM_PROFILE")
 
     logger.debug(f"Custom Profile: {REACHY_MINI_CUSTOM_PROFILE}")
@@ -595,6 +617,9 @@ def refresh_runtime_config_from_env() -> None:
     config.WAKE_WORD_THRESHOLD = resolve_wake_word_threshold()
     config.WAKE_WORD_ACTIVE_TIMEOUT_S = resolve_wake_word_active_timeout_s()
     config.GOODBYE_KEYWORDS = _normalize_goodbye_keywords(os.getenv(GOODBYE_KEYWORDS_ENV))
+    config.OPENCLAW_API_URL = (os.getenv(OPENCLAW_API_URL_ENV) or "").strip()
+    config.OPENCLAW_API_TOKEN = os.getenv(OPENCLAW_API_TOKEN_ENV)
+    config.OPENCLAW_TIMEOUT_S = resolve_openclaw_timeout_s()
 
 
 def get_selected_backend() -> str:

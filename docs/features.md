@@ -2,7 +2,7 @@
 
 > 本文件是 my_conversation_app 当前功能的权威清单。**任何改变应用行为的改动，必须在同一个 PR 里更新本文件**（规则见 `AGENTS.md` 的 *Documentation* 一节）。
 >
-> 最后核对：2026-09-03 · `master@91a4753`
+> 最后核对：2026-09-03 · `master@91a4753`（含 ask_assistant / OpenClaw 对接改动）
 
 应用运行在 Reachy Mini SDK（`reachy_mini`）之上：语音进、语音出 + 机器人动作的实时对话应用，带 Web 管理界面、人格系统、长期记忆、可扩展的 LLM 工具体系（含远程 MCP Tool Spaces）。架构图见 `README.md`（源文件 `docs/scheme.mmd`）。
 
@@ -67,6 +67,7 @@
 - **转写流**：用户部分/最终转写、助手转写均推送到控制台日志与 JSON-RPC 客户端（`conversation.transcript` 通知）。
 - **回合状态机**：对外广播 `listening / thinking / speaking / ready`（`conversation.turn` 通知），驱动 UI 光球。
 - **工具调用**：模型发起的函数调用全部后台执行（见 §7）；结果回填为 `function_call_output`，仅在工具出错或 `needs_response=True` 时触发一次语音跟进；`camera` 拍到的 JPEG 会作为图片消息重新注入多模态对话。
+- **家庭助手等待态**：`ask_assistant`（见 §6）在飞期间，麦克风音频被整体丢弃（服务端 VAD 收不到任何输入，家人闲聊绝不误触发回合），并清空残留输入缓冲；等待期间活动空闲退出（§4）被挂起，结果回来即恢复。工具启动瞬间由应用代播一句垫话——风格池确定性轮换 + 模型自然发挥（机制同唤醒应答 `ASSISTANT_WAIT_ACKNOWLEDGEMENT_PROMPTS`），人设指令明确要求模型不自行播报垫话。新会话（含唤醒恢复）会重置滚动对话历史；OpenClaw 侧使用固定会话标识 `reachy-mini`，跨唤醒/重启保持同一个助手会话（靠 OpenClaw 自身的上下文管理记忆早前询问）。
 - **错误恢复**：后端连接失败按指数退避重试 3 次，外层每 5 秒重连，期间 Web UI 保持可用；单次会话内一个时间只有一条活跃回复（对模型的并发 `response.create` 做串行合并与重试）。
 
 ## 3. 实时后端
@@ -135,6 +136,7 @@
 | `forget` | `query`（必填，子串匹配） | 删除一条记忆，多条时报告其他候选 |
 | `idle_do_nothing` | `reason`（可选） | 空闲轮次保持静止；结果不回传模型 |
 | `go_to_sleep` | 无 | 机器人入睡并停止应用（仅在用户明确要求时） |
+| `ask_assistant` | `query`（必填） | 把复杂任务委托给家庭助手 OpenClaw（实时信息查询、日程提醒、长期家庭记忆、多步规划）。最近对话（含上次结果）由系统自动注入（5 轮、每轮 200 字），模型只需传 query——history 不进工具 schema，避免 Qwen 截断长函数参数。回复经 markdown/emoji 清洗后回传模型转述；调用期间进入静默等待态（见 §2）。危险指令（删除文件/卸载/发消息/花钱）在工具层直接拦截拒答，不发请求；超时或网络错误返回 `{"ok": false, "error": ...}`，由模型播报兜底话术。需配置 `OPENCLAW_API_URL` + `OPENCLAW_API_TOKEN`，未配置时该工具对模型隐藏 |
 
 ### 系统工具（始终启用，独占后台任务管理器引用）
 
@@ -245,9 +247,12 @@
 | `REACHY_MINI_WAKE_WORD_ENABLED` | `1` | 唤醒词门控开关，0 = 常开聆听 |
 | `REACHY_MINI_WAKE_WORD_MODELS` | 内置 `hi_reachy.onnx` | 逗号分隔：预训模型名或 `.onnx`/`.tflite` 路径 |
 | `REACHY_MINI_WAKE_WORD_THRESHOLD` | `0.5` | 检测阈值 0–1，越低越灵敏 |
-| `REACHY_MINI_WAKE_WORD_ACTIVE_TIMEOUT_S` | `300` | 活动空闲退出秒数，0 禁用 |
+| `REACHY_MINI_WAKE_WORD_ACTIVE_TIMEOUT_S` | `300` | 活动空闲退出秒数，0 禁用（ask_assistant 等待期间自动挂起） |
 | `REACHY_MINI_GOODBYE_KEYWORDS` | `再见,拜拜,goodbye,bye-bye,bye bye` | 触发 standby 的告别词 |
 | `REACHY_MINI_WAKE_WORD_DUMP_DIR` | — | 调试：转储待机麦克风音频为 wav |
+| `OPENCLAW_API_URL` | — | OpenClaw 网关的 OpenAI 兼容 completions 地址；未配置则隐藏 `ask_assistant` |
+| `OPENCLAW_API_TOKEN` | — | OpenClaw 网关 Bearer token |
+| `OPENCLAW_TIMEOUT_S` | `60` | ask_assistant HTTP 超时秒数 |
 
 ## 13. 本文档的维护规则
 

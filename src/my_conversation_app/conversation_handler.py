@@ -58,6 +58,10 @@ class ConversationHandler(AsyncStreamHandler, ABC):
                 observer(role, text, final)
             except Exception:
                 logger.debug("transcript observer raised (ignored)", exc_info=True)
+        if final and text:
+            history = self.deps.conversation_history
+            if history is not None:
+                history.append(role, text)
 
     def _mark_activity(self, reason: str) -> None:
         """Record non-idle conversation activity for the idle timer."""
@@ -72,6 +76,10 @@ class ConversationHandler(AsyncStreamHandler, ABC):
     def _idle_behavior_ready(self) -> bool:
         """Return whether idle behavior may run now. Backends can add guards."""
         return True
+
+    def assistant_wait_active(self) -> bool:
+        """Return whether a blocking assistant query is being waited out. Backends override."""
+        return False
 
     async def emit(self) -> HandlerOutput:
         """Emit the next queued output, triggering local idle behavior when due."""

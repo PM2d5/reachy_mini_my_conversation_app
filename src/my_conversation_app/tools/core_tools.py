@@ -44,6 +44,35 @@ class ToolDependencies:
     camera_enabled: bool = False
     motion_duration_s: float = 1.0
     go_to_sleep: Callable[[], dict[str, Any]] | None = None
+    conversation_history: "ConversationHistory | None" = None
+
+
+class ConversationHistory:
+    """Rolling text transcript of the active conversation, shared with tools.
+
+    All access happens on the conversation event loop, so no locking is needed.
+    """
+
+    def __init__(self, max_turns: int = 20) -> None:
+        """Start an empty history bounded to the last ``max_turns`` turns."""
+        self._max_turns = max_turns
+        self._turns: List[Dict[str, str]] = []
+
+    def new_session(self) -> None:
+        """Clear the transcript for a fresh realtime session."""
+        self._turns = []
+
+    def append(self, role: str, content: str) -> None:
+        """Record one finalized user or assistant turn, dropping empty text."""
+        text = content.strip()
+        if not text:
+            return
+        self._turns.append({"role": role, "content": text})
+        del self._turns[: -self._max_turns]
+
+    def snapshot(self) -> List[Dict[str, str]]:
+        """Return a copy of the recorded turns."""
+        return [dict(turn) for turn in self._turns]
 
 
 class ToolSpec(TypedDict):
@@ -65,14 +94,20 @@ class Tool(abc.ABC):
 
     Tools may override:
       - needs_response: bool = True  # set False to skip the spoken follow-up after this tool runs
+      - silence_user_audio_while_running: bool = False  # drop mic audio while the tool runs
     """
 
     _auto_register: ClassVar[bool] = True
     needs_response: ClassVar[bool] = True
+    silence_user_audio_while_running: ClassVar[bool] = False
 
     name: str
     description: str
     parameters_schema: Dict[str, Any]
+
+    def is_available(self) -> bool:
+        """Return whether the tool can run under the current configuration."""
+        return True
 
     def spec(self) -> ToolSpec:
         """Return the function spec for LLM consumption."""
@@ -437,11 +472,11 @@ def initialize_tools(instance_path: str | Path | None = None, *, force: bool = F
 
 
 def get_tool_specs(exclusion_list: list[str] | None = None) -> list[ToolSpec]:
-    """Get tool specs, optionally excluding some tools."""
+    """Get tool specs, excluding unavailable tools and optionally some more."""
     initialize_tools()
     exclusion_list = exclusion_list or []
     with _TOOLS_LOCK:
-        return [tool.spec() for tool in ALL_TOOLS.values() if tool.name not in exclusion_list]
+        return [tool.spec() for tool in ALL_TOOLS.values() if tool.name not in exclusion_list and tool.is_available()]
 
 
 def get_tools() -> dict[str, Tool]:
