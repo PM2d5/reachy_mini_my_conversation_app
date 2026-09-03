@@ -164,6 +164,58 @@ async def test_partial_transcription_uses_latest_snapshot(monkeypatch: Any) -> N
     assert handler.input_transcript_chunks_by_item.deltas == ["Hey, how are you?"]
 
 
+def _injected_greeting_text(handler: Any) -> str:
+    """Return the text of the greeting prompt item queued on the mocked connection."""
+    item = handler.connection.conversation.item.create.call_args.kwargs["item"]
+    assert item["role"] == "user"
+    return str(item["content"][0]["text"])
+
+
+@pytest.mark.asyncio
+async def test_fresh_session_opens_with_session_greeting_prompt(monkeypatch: Any) -> None:
+    """A fresh session's first turn injects the profile greeting prompt."""
+    monkeypatch.setattr(hf_mod, "get_session_greeting_prompt", lambda: "full session greeting")
+
+    handler = HuggingFaceRealtimeHandler(ToolDependencies(reachy_mini=MagicMock(), movement_manager=MagicMock()))
+    handler.connection = AsyncMock()
+
+    await handler._send_startup_greeting_prompt()
+
+    assert _injected_greeting_text(handler) == "full session greeting"
+
+
+@pytest.mark.asyncio
+async def test_resumed_session_answers_with_terse_wake_acknowledgement(monkeypatch: Any) -> None:
+    """A session reopened from wake standby greets with a terse ack, not the full greeting."""
+    monkeypatch.setattr(hf_mod, "get_session_greeting_prompt", lambda: "full session greeting")
+
+    handler = HuggingFaceRealtimeHandler(ToolDependencies(reachy_mini=MagicMock(), movement_manager=MagicMock()))
+    await handler.resume_session()
+    handler.connection = AsyncMock()
+
+    await handler._send_startup_greeting_prompt()
+
+    assert _injected_greeting_text(handler) in hf_mod.WAKE_ACKNOWLEDGEMENT_PROMPTS
+
+
+@pytest.mark.asyncio
+async def test_consecutive_wakes_rotate_the_acknowledgement_flavor(monkeypatch: Any) -> None:
+    """Each wake opens a memoryless session, so the app itself must rotate the ack flavor."""
+    monkeypatch.setattr(hf_mod, "get_session_greeting_prompt", lambda: "full session greeting")
+
+    handler = HuggingFaceRealtimeHandler(ToolDependencies(reachy_mini=MagicMock(), movement_manager=MagicMock()))
+    handler._wake_ack_index = 0
+    acks = []
+    for _ in range(2):
+        await handler.resume_session()
+        handler.connection = AsyncMock()
+        await handler._send_startup_greeting_prompt()
+        acks.append(_injected_greeting_text(handler))
+
+    assert acks[0] == hf_mod.WAKE_ACKNOWLEDGEMENT_PROMPTS[0]
+    assert acks[1] == hf_mod.WAKE_ACKNOWLEDGEMENT_PROMPTS[1]
+
+
 @pytest.mark.asyncio
 async def test_emit_skips_idle_signal_while_response_active(monkeypatch: Any) -> None:
     """Idle tools should not trigger while a response is still active."""

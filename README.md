@@ -49,7 +49,9 @@ goodbye ("再见", "拜拜", "goodbye", configurable) or stay silent for 5 minut
 realtime session pauses, Reachy retracts its neck while keeping the head level
 (distinct from the sleep pose) and holds its antennas still, and the mic only
 feeds an offline wake word detector (openWakeWord). Saying the wake word lifts
-the head back up and resumes the session with a fresh greeting.
+the head back up and resumes the session with a brief spoken acknowledgement — just a
+couple of words, like "I'm here", not a full greeting. Each wake opens a memoryless
+session, so the app rotates between a few acknowledgement flavors to keep them varied.
 
 The default wake word is **"hi reachy"**, detected by a custom model bundled in the
 app (`src/my_conversation_app/audio/models/hi_reachy.onnx`), trained locally with

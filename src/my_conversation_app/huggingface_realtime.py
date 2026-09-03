@@ -39,6 +39,7 @@ from my_conversation_app.config import (
     get_hf_connection_selection,
 )
 from my_conversation_app.prompts import (
+    WAKE_ACKNOWLEDGEMENT_PROMPTS,
     get_session_voice,
     get_session_instructions,
     get_session_greeting_prompt,
@@ -162,6 +163,9 @@ class HuggingFaceRealtimeHandler(ConversationHandler):
         self._turn_response_created_at: float | None = None
         self._turn_first_audio_at: float | None = None
         self._startup_greeting_sent = False
+        self._wake_ack_pending = False
+        # Random start so the first wake after every boot does not always land on the same flavor.
+        self._wake_ack_index = random.randrange(len(WAKE_ACKNOWLEDGEMENT_PROMPTS))
         self._in_flight_tool_calls: set[str] = set()
         self._tool_batch_needs_response = False
 
@@ -419,9 +423,11 @@ class HuggingFaceRealtimeHandler(ConversationHandler):
         """Prepare to reopen after a pause; the startup loop reconnects and re-greets.
 
         The greeting flag is cleared so the reopened session greets the user again,
-        as the wake acknowledgement.
+        as the wake acknowledgement — swapped for a terse two-or-three-word ack
+        (rotating between flavors) rather than the full startup greeting.
         """
         self._startup_greeting_sent = False
+        self._wake_ack_pending = True
 
     async def _restart_session(self) -> None:
         """Force-close the current session and start a fresh one in background.
@@ -491,7 +497,10 @@ class HuggingFaceRealtimeHandler(ConversationHandler):
         if self._startup_greeting_sent or not self.connection:
             return
 
-        greeting_prompt = get_session_greeting_prompt().strip()
+        if self._wake_ack_pending:
+            greeting_prompt = WAKE_ACKNOWLEDGEMENT_PROMPTS[self._wake_ack_index % len(WAKE_ACKNOWLEDGEMENT_PROMPTS)]
+        else:
+            greeting_prompt = get_session_greeting_prompt().strip()
         if not greeting_prompt:
             self._startup_greeting_sent = True
             return
@@ -510,6 +519,8 @@ class HuggingFaceRealtimeHandler(ConversationHandler):
                 },
             )
             self._startup_greeting_sent = True
+            self._wake_ack_pending = False
+            self._wake_ack_index += 1
             self._mark_activity("startup_greeting_prompt")
             await self._safe_response_create()
             logger.info("Queued startup greeting prompt")

@@ -21,6 +21,31 @@ DEFAULT_GREETING_PROMPT = (
     "Keep it to one sentence, invite the user in naturally, and vary the wording each time."
 )
 
+# Each wake opens a fresh session with no memory of previous acknowledgements, so the
+# app rotates these flavors itself; asking the model to "vary" cannot work across sessions.
+WAKE_ACKNOWLEDGEMENT_PROMPTS = (
+    (
+        "The user just woke you with the wake word. Answer with one very short spoken "
+        "acknowledgement — two or three words at most, the way someone answers when their "
+        "name is called — in the language you speak. No full sentence."
+    ),
+    (
+        "The user just woke you with the wake word. Answer with one very short spoken "
+        "check-in — two or three words at most, casually asking what they need — in the "
+        "language you speak. No full sentence."
+    ),
+    (
+        "The user just woke you with the wake word. Answer with a single short spoken "
+        "interjection — one or two words, a curious hum or half-word — in the language "
+        "you speak. No full sentence."
+    ),
+    (
+        "The user just woke you with the wake word. Answer with one blunt, slightly "
+        "impatient spoken 'what?' — a single word, as if they had interrupted you "
+        "mid-thought — in the language you speak. No full sentence."
+    ),
+)
+
 
 def _active_profile() -> ProfileDefinition:
     return read_profile(config.REACHY_MINI_CUSTOM_PROFILE)

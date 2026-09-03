@@ -2,7 +2,7 @@
 
 > 本文件是 my_conversation_app 当前功能的权威清单。**任何改变应用行为的改动，必须在同一个 PR 里更新本文件**（规则见 `AGENTS.md` 的 *Documentation* 一节）。
 >
-> 最后核对：2026-09-03 · `master@b91eb67`
+> 最后核对：2026-09-03 · `master@91a4753`
 
 应用运行在 Reachy Mini SDK（`reachy_mini`）之上：语音进、语音出 + 机器人动作的实时对话应用，带 Web 管理界面、人格系统、长期记忆、可扩展的 LLM 工具体系（含远程 MCP Tool Spaces）。架构图见 `README.md`（源文件 `docs/scheme.mmd`）。
 
@@ -56,13 +56,13 @@
 **关闭**
 
 - 外部停止（dashboard/手机）：只停应用，机器人保持清醒，由 daemon 归位。
-- 睡眠路径（`go_to_sleep` 工具或应用级超时）：停抖动、停动作管理器（不归位）→ `robot.goto_sleep()` → 请求停止当前应用。下次启动时由第 2 步唤醒。
+- 睡眠路径（`go_to_sleep` 工具或应用级超时）：停抖动、停动作管理器（不归位）→ 从当前位姿直接插值到 SDK 睡眠位姿（`goto_sleep_from_current_pose`，不绕行中立位，避免待机缩头时先抬头再低头）→ 请求停止当前应用。下次启动时由第 2 步唤醒。
 
 ## 2. 实时语音对话
 
 代码：`console.py`、`huggingface_realtime.py`、`streaming.py`
 
-- **开场问候**：每次会话建立后注入 `greeting` 提示（profile 可自定义；默认指令要求用一句符合人设的话自然开场），从唤醒词恢复时也会重新问候。
+- **开场问候**：每次会话建立后注入 `greeting` 提示（profile 可自定义；默认指令要求用一句符合人设的话自然开场）；从唤醒词恢复时改为极简应答（见第 4 节）。
 - **聆听与打断**：服务端 VAD 负责断句；用户一开口（`speech_started`）即本地清空播放队列实现真打断（barge-in），同时冻结天线动作表示"在听"。
 - **转写流**：用户部分/最终转写、助手转写均推送到控制台日志与 JSON-RPC 客户端（`conversation.transcript` 通知）。
 - **回合状态机**：对外广播 `listening / thinking / speaking / ready`（`conversation.turn` 通知），驱动 UI 光球。
@@ -92,7 +92,7 @@
 会话有两个相位，经 `conversation.phase {phase, reason}` 广播：
 
 - **active**：正常聆听对话。首次启动即进入，机器人先问候。
-- **standby**：实时会话暂停，机器人缩头下沉（头部保持水平、不低头，与真正的休眠姿态区分；天线垂落静止，2 s 插值），期间抑制呼吸动作；麦克风只喂给离线唤醒词检测器（openWakeWord，ONNX，16 kHz）。默认唤醒词 **"hi reachy"**，由内置自训模型 `audio/models/hi_reachy.onnx` 检测；说出唤醒词即抬头回中立位（1.5 s 插值）并恢复会话、重新问候。
+- **standby**：实时会话暂停，机器人缩头下沉（头部保持水平、不低头，与真正的休眠姿态区分；天线垂落静止，2 s 插值），期间抑制呼吸动作；麦克风只喂给离线唤醒词检测器（openWakeWord，ONNX，16 kHz）。默认唤醒词 **"hi reachy"**，由内置自训模型 `audio/models/hi_reachy.onnx` 检测；说出唤醒词即抬头回中立位（1.5 s 插值）并恢复会话，以极简应答代替重新问候（`WAKE_ACKNOWLEDGEMENT_PROMPTS`：两三个词、跟所讲语言一致，如"我在""干嘛"；每次唤醒是无记忆的新会话，由应用在几种应答风格间轮换并随机起步，保证说法有变化）。
 
 进入 standby 的两个触发条件：
 
