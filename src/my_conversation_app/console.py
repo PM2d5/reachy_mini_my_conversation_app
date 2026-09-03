@@ -194,8 +194,9 @@ class LocalStream:
         self._drain_output_queue()
         try:
             self.handler.deps.movement_manager.set_listening(False)
+            self.handler.deps.movement_manager.set_standby(True)
         except Exception:
-            logger.debug("Could not reset listening state on standby", exc_info=True)
+            logger.debug("Could not reset listening state or tuck the head on standby", exc_info=True)
         await self.handler.pause_session()
 
     async def _wake_from_standby(self) -> None:
@@ -203,6 +204,10 @@ class LocalStream:
         self._standby = False
         self.handler.last_activity_time = time.monotonic()
         self._emit_phase("active", "wake_word")
+        try:
+            self.handler.deps.movement_manager.set_standby(False)
+        except Exception:
+            logger.debug("Could not lift the head out of standby", exc_info=True)
         await self.handler.resume_session()
 
     def _active_idle_expired(self) -> bool:

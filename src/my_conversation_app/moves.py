@@ -6,7 +6,9 @@ Design overview
 - There is a single control point to the robot: `ReachyMini.set_target`.
 - The control loop runs near 100 Hz and is phase-aligned via a monotonic clock.
 - Idle behaviour starts an infinite `BreathingMove` after a short inactivity delay
-  unless listening is active.
+  unless listening or standby is active.
+- Wake-word standby retracts the head while keeping it level (antennas still) and
+  lifts back to neutral on wake.
 
 Threading model
 - A dedicated worker thread owns all real-time state and issues `set_target`
@@ -38,14 +40,38 @@ from numpy.typing import NDArray
 from reachy_mini import ReachyMini
 from reachy_mini.utils import create_head_pose
 from reachy_mini.motion.move import Move
+from reachy_mini.reachy_mini import SLEEP_HEAD_POSE, INIT_ANTENNAS_JOINT_POSITIONS, SLEEP_ANTENNAS_JOINT_POSITIONS
 from reachy_mini.utils.interpolation import compose_world_offset, linear_pose_interpolation
-from my_conversation_app.dance_emotion_moves import EmotionQueueMove
+from my_conversation_app.dance_emotion_moves import GotoQueueMove, EmotionQueueMove
 
 
 logger = logging.getLogger(__name__)
 
 # Configuration constants
 CONTROL_LOOP_FREQUENCY_HZ = 60.0  # Hz - Target frequency for the movement control loop
+
+# Wake-word standby tuck: the sleep pose's retraction depth, but the head stays
+# level so standby is visually distinct from the real sleep pose.
+STANDBY_HEAD_POSE = create_head_pose(
+    x=0,
+    y=0,
+    z=float(SLEEP_HEAD_POSE[2, 3]),
+    roll=0,
+    pitch=0,
+    yaw=0,
+    mm=False,
+    degrees=True,
+)
+STANDBY_ANTENNAS: tuple[float, float] = (
+    float(SLEEP_ANTENNAS_JOINT_POSITIONS[0]),
+    float(SLEEP_ANTENNAS_JOINT_POSITIONS[1]),
+)
+NEUTRAL_ANTENNAS: tuple[float, float] = (
+    float(INIT_ANTENNAS_JOINT_POSITIONS[0]),
+    float(INIT_ANTENNAS_JOINT_POSITIONS[1]),
+)
+STANDBY_TUCK_DURATION_S = 2.0
+STANDBY_WAKE_DURATION_S = 1.5
 
 # Type definitions
 FullBodyPose = Tuple[NDArray[np.float32], Tuple[float, float], float]  # (head_pose_4x4, antennas, body_yaw)
@@ -221,6 +247,7 @@ class MovementManager:
         self._antenna_blend_duration = 0.4  # seconds to blend back after listening
         self._last_listening_blend_time = self._now()
         self._breathing_active = False  # true when breathing move is running or queued
+        self._standby = False  # true while tucked into the wake-word standby pose
         self._listening_debounce_s = 0.15
         self._last_listening_toggle_time = self._now()
         self._last_set_target_err = 0.0
@@ -285,6 +312,10 @@ class MovementManager:
             if self._shared_is_listening == listening:
                 return
         self._command_queue.put(("set_listening", listening))
+
+    def set_standby(self, enabled: bool) -> None:
+        """Retract the head level into the standby pose and hold still until standby ends."""
+        self._command_queue.put(("set_standby", enabled))
 
     def set_head_tracking(self, enabled: bool) -> None:
         """Start or stop following the user's face; thread-safe via the command queue."""
@@ -367,6 +398,18 @@ class MovementManager:
                 # Unfreeze: restart blending from frozen pose
                 self._antenna_unfreeze_blend = 0.0
             self.state.update_activity()
+        elif command == "set_standby":
+            enabled = bool(payload)
+            if self._standby == enabled:
+                return
+            self._standby = enabled
+            # Drop whatever is playing so the tuck (or the lift) starts from the live pose.
+            self.move_queue.clear()
+            self.state.current_move = None
+            self.state.move_start_time = None
+            self._breathing_active = False
+            self.move_queue.append(self._standby_transition(enabled))
+            self.state.update_activity()
         elif command == "set_head_tracking":
             enabled = bool(payload)
             if self._head_tracking == enabled:
@@ -402,6 +445,37 @@ class MovementManager:
         else:
             logger.warning("Unknown command received by MovementManager: %s", command)
 
+    def _standby_transition(self, to_standby: bool) -> GotoQueueMove:
+        """Build the goto that retracts into the standby pose, or lifts back to neutral."""
+        start_head_pose = self._last_commanded_pose[0]
+        start_antennas = self._last_commanded_pose[1]
+        start_body_yaw = self._last_commanded_pose[2]
+        try:
+            # Latest sensor values; like the breathing start, these do not perform I/O.
+            _, current_antennas = self.current_robot.get_current_joint_positions()
+            start_head_pose = self.current_robot.get_current_head_pose()
+            start_antennas = (float(current_antennas[0]), float(current_antennas[1]))
+        except Exception as e:
+            logger.warning("Standby move starts from the last commanded pose: %s", e)
+
+        if to_standby:
+            target_head_pose = STANDBY_HEAD_POSE
+            target_antennas = STANDBY_ANTENNAS
+            duration = STANDBY_TUCK_DURATION_S
+        else:
+            target_head_pose = create_head_pose(0, 0, 0, 0, 0, 0, degrees=True)
+            target_antennas = NEUTRAL_ANTENNAS
+            duration = STANDBY_WAKE_DURATION_S
+        return GotoQueueMove(
+            target_head_pose=target_head_pose,
+            start_head_pose=start_head_pose,
+            target_antennas=target_antennas,
+            start_antennas=start_antennas,
+            target_body_yaw=start_body_yaw,
+            start_body_yaw=start_body_yaw,
+            duration=duration,
+        )
+
     def _publish_shared_state(self) -> None:
         """Expose idle-related state for external threads."""
         with self._shared_state_lock:
@@ -430,6 +504,7 @@ class MovementManager:
             self.state.current_move is None
             and not self.move_queue
             and not self._is_listening
+            and not self._standby
             and not self._breathing_active
         ):
             idle_for = current_time - self.state.last_activity_time

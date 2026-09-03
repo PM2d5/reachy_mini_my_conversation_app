@@ -8,7 +8,7 @@ import pytest
 
 from reachy_mini.utils import create_head_pose
 from reachy_mini.utils.interpolation import compose_world_offset
-from my_conversation_app.moves import MovementManager
+from my_conversation_app.moves import NEUTRAL_ANTENNAS, STANDBY_ANTENNAS, STANDBY_HEAD_POSE, MovementManager
 from my_conversation_app.dance_emotion_moves import EmotionQueueMove
 
 
@@ -52,6 +52,49 @@ def test_stop_can_skip_neutral_reset(monkeypatch: pytest.MonkeyPatch) -> None:
 
     assert manager._thread is None
     robot.goto_target.assert_not_called()
+
+
+def test_standby_tucks_head_and_freezes_antennas() -> None:
+    """Entering standby queues a level head retraction and suppresses breathing."""
+    robot = MagicMock()
+    robot.get_current_head_pose.return_value = create_head_pose(0, 0, 0, 0, 0, 0, degrees=True)
+    robot.get_current_joint_positions.return_value = ([0.0] * 7, [0.0, 0.0])
+    manager = MovementManager(robot)
+
+    manager._handle_command("set_standby", True, manager._now())
+
+    assert manager._standby is True
+    (tuck_move,) = manager.move_queue
+    # Standby must stay distinct from the real sleep pose: the head stays level.
+    assert np.allclose(tuck_move.target_head_pose[:3, :3], np.eye(3))
+    assert tuck_move.target_antennas == STANDBY_ANTENNAS
+    head, antennas, _body_yaw = tuck_move.evaluate(tuck_move.duration)
+    assert np.allclose(head, STANDBY_HEAD_POSE)
+    assert np.allclose(antennas, STANDBY_ANTENNAS)
+
+    # Once the tuck has played (queue empty, idle again) breathing must not restart.
+    manager.move_queue.clear()
+    manager.state.last_activity_time = manager._now() - 10 * manager.idle_inactivity_delay
+    manager._manage_breathing(manager._now())
+    assert manager._breathing_active is False
+    assert not manager.move_queue
+
+
+def test_wake_lifts_head_back_to_neutral() -> None:
+    """Leaving standby queues a goto that returns the head and antennas to neutral."""
+    robot = MagicMock()
+    robot.get_current_head_pose.return_value = create_head_pose(0, 0, 0, 0, 0, 0, degrees=True)
+    robot.get_current_joint_positions.return_value = ([0.0] * 7, [0.0, 0.0])
+    manager = MovementManager(robot)
+    manager._handle_command("set_standby", True, manager._now())
+
+    manager._handle_command("set_standby", False, manager._now())
+
+    assert manager._standby is False
+    (wake_move,) = manager.move_queue
+    assert np.allclose(wake_move.target_head_pose, np.eye(4))
+    assert wake_move.target_antennas == NEUTRAL_ANTENNAS
+    assert wake_move.start_body_yaw == wake_move.target_body_yaw
 
 
 def test_head_tracking_follows_speaking() -> None:

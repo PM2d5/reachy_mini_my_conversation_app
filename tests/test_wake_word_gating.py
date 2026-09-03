@@ -45,6 +45,7 @@ async def test_goodbye_transcript_pauses_session(monkeypatch: pytest.MonkeyPatch
     await asyncio.sleep(0.05)
 
     handler.pause_session.assert_awaited_once()
+    handler.deps.movement_manager.set_standby.assert_called_once_with(True)
     assert stream._standby is True
 
 
@@ -72,6 +73,7 @@ async def test_wake_leaves_standby_before_the_startup_loop_reconnects(monkeypatc
     await stream._wake_from_standby()
 
     handler.resume_session.assert_awaited_once()
+    handler.deps.movement_manager.set_standby.assert_called_once_with(False)
     assert stream._standby is False
 
 
@@ -99,6 +101,7 @@ async def test_wake_word_hit_resumes_session(monkeypatch: pytest.MonkeyPatch) ->
     await asyncio.sleep(0.05)
 
     handler.resume_session.assert_awaited_once()
+    handler.deps.movement_manager.set_standby.assert_called_once_with(False)
     assert stream._standby is False
 
 
