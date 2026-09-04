@@ -40,6 +40,7 @@ from my_conversation_app.config import (
 )
 from my_conversation_app.prompts import (
     WAKE_ACKNOWLEDGEMENT_PROMPTS,
+    ASSISTANT_RESULT_RELAY_PROMPT,
     ASSISTANT_WAIT_ACKNOWLEDGEMENT_PROMPTS,
     get_session_voice,
     get_session_instructions,
@@ -639,6 +640,7 @@ class HuggingFaceRealtimeHandler(ConversationHandler):
 
     async def _handle_tool_result(self, completed_tool: ToolNotification) -> None:
         """Process the result of a tool call."""
+        was_silent_wait = isinstance(completed_tool.id, str) and completed_tool.id in self._silent_wait_call_ids
         if isinstance(completed_tool.id, str):
             self._silent_wait_call_ids.discard(completed_tool.id)
         if completed_tool.error is not None:
@@ -709,6 +711,17 @@ class HuggingFaceRealtimeHandler(ConversationHandler):
                         },
                     )
                     model_result_submitted = True
+                    if was_silent_wait:
+                        # The spoken wait line lingers as the latest user message and
+                        # would otherwise dominate the relay turn; re-anchor the model
+                        # on the tool output that just arrived.
+                        await self.connection.conversation.item.create(
+                            item={
+                                "type": "message",
+                                "role": "user",
+                                "content": [{"type": "input_text", "text": ASSISTANT_RESULT_RELAY_PROMPT}],
+                            },
+                        )
 
             await self.output_queue.put(
                 AdditionalOutputs(

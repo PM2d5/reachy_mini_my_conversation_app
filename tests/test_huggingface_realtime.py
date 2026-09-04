@@ -651,3 +651,44 @@ async def test_assistant_wait_acknowledgement_rotates_styles(monkeypatch: Any) -
         hf_mod.ASSISTANT_WAIT_ACKNOWLEDGEMENT_PROMPTS[0],
         hf_mod.ASSISTANT_WAIT_ACKNOWLEDGEMENT_PROMPTS[1],
     ]
+
+
+def _completed_notification(tool_name: str, call_id: str) -> ToolNotification:
+    """Build a successful non-idle tool notification for result handling tests."""
+    return ToolNotification(
+        id=call_id,
+        tool_name=tool_name,
+        is_idle_tool_call=False,
+        status=ToolState.COMPLETED,
+        result={"status": "ok"},
+    )
+
+
+@pytest.mark.asyncio
+async def test_assistant_result_gets_a_relay_anchor_after_the_wait_line() -> None:
+    """A silent-wait result is followed by a user item that re-anchors the relay turn."""
+    handler = HuggingFaceRealtimeHandler(ToolDependencies(reachy_mini=MagicMock(), movement_manager=MagicMock()))
+    handler.connection = AsyncMock()
+    handler._silent_wait_call_ids.add("call-1")
+
+    await handler._handle_tool_result(_completed_notification("ask_assistant", "call-1"))
+
+    items = [call.kwargs["item"] for call in handler.connection.conversation.item.create.await_args_list]
+    assert items[0]["type"] == "function_call_output"
+    assert items[1] == {
+        "type": "message",
+        "role": "user",
+        "content": [{"type": "input_text", "text": hf_mod.ASSISTANT_RESULT_RELAY_PROMPT}],
+    }
+
+
+@pytest.mark.asyncio
+async def test_regular_tool_result_gets_no_relay_anchor() -> None:
+    """Tools without a spoken wait line need no re-anchoring user item."""
+    handler = HuggingFaceRealtimeHandler(ToolDependencies(reachy_mini=MagicMock(), movement_manager=MagicMock()))
+    handler.connection = AsyncMock()
+
+    await handler._handle_tool_result(_completed_notification("move_head", "call-2"))
+
+    items = [call.kwargs["item"] for call in handler.connection.conversation.item.create.await_args_list]
+    assert [item["type"] for item in items] == ["function_call_output"]

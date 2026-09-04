@@ -77,6 +77,15 @@ ASSISTANT_WAIT_ACKNOWLEDGEMENT_PROMPTS = (
     ),
 )
 
+# The wait line above is injected as a user message and stays in the context; without
+# this counter-anchor the model keeps answering it instead of relaying the tool result.
+ASSISTANT_RESULT_RELAY_PROMPT = (
+    "The home-assistant query just finished and its output is the tool result above. "
+    "The wait is over. Relay that answer to the user now, faithfully and concisely, in "
+    "the user's language — if the tool result reports an error instead, tell the user "
+    "it didn't work out this time. Never announce waiting or checking again."
+)
+
 
 def _active_profile() -> ProfileDefinition:
     return read_profile(config.REACHY_MINI_CUSTOM_PROFILE)
