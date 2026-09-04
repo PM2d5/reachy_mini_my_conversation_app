@@ -73,6 +73,11 @@ NEUTRAL_ANTENNAS: tuple[float, float] = (
 STANDBY_TUCK_DURATION_S = 2.0
 STANDBY_WAKE_DURATION_S = 1.5
 
+# Busy antenna sway: both antennas wag together while a long tool call (e.g. the
+# OpenClaw assistant) is pending, as a visible "thinking" indicator.
+BUSY_SWAY_AMPLITUDE = float(np.deg2rad(20))  # 20 degrees
+BUSY_SWAY_FREQUENCY_HZ = 0.6
+
 # Type definitions
 FullBodyPose = Tuple[NDArray[np.float32], Tuple[float, float], float]  # (head_pose_4x4, antennas, body_yaw)
 
@@ -248,6 +253,9 @@ class MovementManager:
         self._last_listening_blend_time = self._now()
         self._breathing_active = False  # true when breathing move is running or queued
         self._standby = False  # true while tucked into the wake-word standby pose
+        self._busy_sway = False  # true while a pending tool call wags the antennas
+        self._busy_sway_center: Tuple[float, float] = (0.0, 0.0)
+        self._busy_sway_start = 0.0
         self._listening_debounce_s = 0.15
         self._last_listening_toggle_time = self._now()
         self._last_set_target_err = 0.0
@@ -316,6 +324,10 @@ class MovementManager:
     def set_standby(self, enabled: bool) -> None:
         """Retract the head level into the standby pose and hold still until standby ends."""
         self._command_queue.put(("set_standby", enabled))
+
+    def set_busy_sway(self, enabled: bool) -> None:
+        """Wag both antennas while a long tool call is pending, then blend back; thread-safe."""
+        self._command_queue.put(("set_busy_sway", enabled))
 
     def set_head_tracking(self, enabled: bool) -> None:
         """Start or stop following the user's face; thread-safe via the command queue."""
@@ -409,6 +421,27 @@ class MovementManager:
             self.state.move_start_time = None
             self._breathing_active = False
             self.move_queue.append(self._standby_transition(enabled))
+            self.state.update_activity()
+        elif command == "set_busy_sway":
+            enabled = bool(payload)
+            if self._busy_sway == enabled:
+                return
+            self._busy_sway = enabled
+            if enabled:
+                # Sway starts from the live commanded pose so there is no jump on entry.
+                self._busy_sway_center = (
+                    float(self._last_commanded_pose[1][0]),
+                    float(self._last_commanded_pose[1][1]),
+                )
+                self._busy_sway_start = current_time
+            else:
+                # Seed the unfreeze blend so the antennas glide back instead of snapping.
+                self._listening_antennas = (
+                    float(self._last_commanded_pose[1][0]),
+                    float(self._last_commanded_pose[1][1]),
+                )
+                self._antenna_unfreeze_blend = 0.0
+                self._last_listening_blend_time = current_time
             self.state.update_activity()
         elif command == "set_head_tracking":
             enabled = bool(payload)
@@ -589,6 +622,14 @@ class MovementManager:
     def _calculate_blended_antennas(self, target_antennas: Tuple[float, float]) -> Tuple[float, float]:
         """Blend target antennas with listening freeze state and update blending."""
         now = self._now()
+        if self._busy_sway:
+            # Busy sway outranks the listening freeze: it signals a pending tool call.
+            sway = BUSY_SWAY_AMPLITUDE * np.sin(2 * np.pi * BUSY_SWAY_FREQUENCY_HZ * (now - self._busy_sway_start))
+            self._last_listening_blend_time = now
+            return (
+                self._busy_sway_center[0] + sway,
+                self._busy_sway_center[1] + sway,
+            )
         listening = self._is_listening
         listening_antennas = self._listening_antennas
         blend = self._antenna_unfreeze_blend

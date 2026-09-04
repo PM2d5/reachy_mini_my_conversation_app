@@ -8,7 +8,13 @@ import pytest
 
 from reachy_mini.utils import create_head_pose
 from reachy_mini.utils.interpolation import compose_world_offset
-from my_conversation_app.moves import NEUTRAL_ANTENNAS, STANDBY_ANTENNAS, STANDBY_HEAD_POSE, MovementManager
+from my_conversation_app.moves import (
+    NEUTRAL_ANTENNAS,
+    STANDBY_ANTENNAS,
+    STANDBY_HEAD_POSE,
+    BUSY_SWAY_AMPLITUDE,
+    MovementManager,
+)
 from my_conversation_app.dance_emotion_moves import EmotionQueueMove
 
 
@@ -123,6 +129,33 @@ def test_head_tracking_follows_speaking() -> None:
         manager.stop(reset_to_neutral=False)
 
     robot.stop_head_tracking.assert_called_once()
+
+
+def test_busy_sway_wags_antennas_together_then_blends_back() -> None:
+    """Busy sway starts from the live pose, wags both antennas together, then glides back."""
+    robot = MagicMock()
+    manager = MovementManager(robot)
+    entry_pose = (np.eye(4, dtype=np.float32), (0.1, -0.1), 0.0)
+    manager._last_commanded_pose = entry_pose
+
+    manager._handle_command("set_busy_sway", True, manager._now())
+
+    # At entry the sway equals its center: no jump when the tool call starts.
+    entry_left, entry_right = manager._calculate_blended_antennas((0.0, 0.0))
+    assert entry_left == pytest.approx(0.1, abs=0.05)
+    assert entry_right == pytest.approx(-0.1, abs=0.05)
+
+    # A quarter period later both antennas are offset by the same amplitude.
+    manager._busy_sway_start -= 1.0 / (4 * 0.6)
+    left, right = manager._calculate_blended_antennas((0.0, 0.0))
+    assert left == pytest.approx(0.1 + BUSY_SWAY_AMPLITUDE, abs=1e-5)
+    assert right == pytest.approx(-0.1 + BUSY_SWAY_AMPLITUDE, abs=1e-5)
+
+    # After the tool call the antennas blend back toward the target instead of snapping.
+    manager._handle_command("set_busy_sway", False, manager._now())
+    assert manager._busy_sway is False
+    assert manager._listening_antennas == (0.1, -0.1)
+    assert manager._antenna_unfreeze_blend == 0.0
 
 
 def test_speaking_anchor_composes_emotions_and_holds_dances_from_neutral() -> None:

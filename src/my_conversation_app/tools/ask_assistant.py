@@ -148,6 +148,8 @@ class AskAssistant(Tool):
         messages = [*history, {"role": "user", "content": query.strip()}]
         logger.info("ask_assistant query=%r history_turns=%d", query, len(history))
 
+        # Wag the antennas while OpenClaw works (it regularly takes 30s+), stop on any outcome.
+        deps.movement_manager.set_busy_sway(True)
         try:
             async with httpx.AsyncClient(timeout=config.OPENCLAW_TIMEOUT_S) as client:
                 response = await client.post(
@@ -161,6 +163,8 @@ class AskAssistant(Tool):
         except httpx.HTTPError as exc:
             logger.warning("ask_assistant request failed: %s", exc)
             return {"ok": False, "error": "network_error"}
+        finally:
+            deps.movement_manager.set_busy_sway(False)
 
         if response.status_code != 200:
             logger.warning("ask_assistant returned HTTP %d: %s", response.status_code, response.text[:200])

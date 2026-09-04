@@ -1,6 +1,6 @@
 import json
 import asyncio
-from unittest.mock import MagicMock
+from unittest.mock import MagicMock, call
 
 import httpx
 import pytest
@@ -105,6 +105,22 @@ async def test_calendar_deletion_is_not_blocked(monkeypatch: pytest.MonkeyPatch)
     result = await AskAssistant()(_make_deps(), query="帮我删除明天的日程")
 
     assert result["ok"] is True
+
+
+@pytest.mark.asyncio
+async def test_busy_sway_wraps_the_request(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The antennas wag while OpenClaw works and stop again on any outcome."""
+    _configure_openclaw(monkeypatch)
+
+    def refused_handler(request: httpx.Request) -> httpx.Response:
+        raise httpx.ConnectError("refused")
+
+    _install_transport(monkeypatch, refused_handler)
+    deps = _make_deps()
+    result = await AskAssistant()(deps, query="查一下天气")
+
+    assert result == {"ok": False, "error": "network_error"}
+    deps.movement_manager.set_busy_sway.assert_has_calls([call(True), call(False)])
 
 
 @pytest.mark.asyncio
