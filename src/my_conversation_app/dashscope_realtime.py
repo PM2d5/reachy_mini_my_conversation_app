@@ -7,6 +7,13 @@ Translation happens at the connection boundary:
 
 - outgoing ``session.update`` payloads are flattened from the OpenAI nested
   ``audio.input/output`` shape to the DashScope flat shape;
+- outgoing ``conversation.item.create`` user messages carrying ``input_image``
+  parts become ``input_image_buffer.append`` + ``input_audio_buffer.commit``,
+  the only image path DashScope accepts (it only supports ``function_call_output``
+  items); oversized camera JPEGs are re-encoded down first, since DashScope
+  closes the connection on frames above 256 KiB, and because the server VAD
+  only commits images alongside speech, the connection briefly switches to
+  manual turn detection around the image turn;
 - incoming event names are mapped to the modern OpenAI realtime names the
   conversation loop expects, confirmed transcript snapshots become
   incremental deltas, and the 24 kHz output audio is resampled to the app's
@@ -17,10 +24,12 @@ import json
 import uuid
 import base64
 import logging
+from io import BytesIO
 from typing import Any, Mapping
 
 import numpy as np
 import websockets
+from PIL import Image
 from openai import AsyncOpenAI
 from numpy.typing import NDArray
 from openai.types.realtime import RealtimeClientEvent, RealtimeServerEvent, RealtimeClientEventParam
@@ -40,6 +49,22 @@ logger = logging.getLogger(__name__)
 # DashScope delivers output audio as 24 kHz PCM regardless of the requested
 # output format; the app plays back at 16 kHz.
 DASHSCOPE_OUTPUT_SAMPLE_RATE = 24000
+
+# DashScope closes the whole websocket (1009) when a single frame exceeds
+# 256 KiB, and its image input documents the same 256 KiB base64 cap per
+# image, recommending ~190 KiB raw JPEGs at 480p/720p
+# (help.aliyun.com/en/model-studio/client-events). The JSON envelope around
+# the base64 payload takes a few hundred bytes.
+DASHSCOPE_FRAME_LIMIT_BYTES = 256 * 1024
+DASHSCOPE_IMAGE_B64_SAFE_BYTES = DASHSCOPE_FRAME_LIMIT_BYTES - 512
+DASHSCOPE_JPEG_TARGET_BYTES = 190 * 1024
+
+# Ladder walked by _shrink_image_payload: smaller edges, then lower quality.
+_SHRINK_MAX_EDGES = (1280, 960, 640)
+_SHRINK_QUALITY_STEPS = (85, 70, 55)
+
+# Fallback restored after an image turn when no app session.update was seen.
+_DEFAULT_TURN_DETECTION = {"type": "server_vad", "interrupt_response": True}
 
 # DashScope event name -> modern OpenAI realtime event name.
 _EVENT_NAME_MAP = {
@@ -109,6 +134,71 @@ def normalize_session(session: Any) -> dict[str, Any]:
     return flat
 
 
+def _data_url_base64_payload(image_url: Any) -> str | None:
+    """Return the base64 payload of a data URL, or None for any other URL form."""
+    if not isinstance(image_url, str) or not image_url.startswith("data:"):
+        return None
+    _, separator, payload = image_url.partition(",")
+    return payload if separator else None
+
+
+def _shrink_image_payload(image_b64: str) -> str:
+    """Re-encode an oversized base64 JPEG down to DashScope's image budget.
+
+    Camera frames commonly exceed the limit (a 1080p JPEG easily reaches
+    500 KiB+); DashScope would drop the connection on the oversized frame.
+    Returns the original payload when no encoding fits, so callers re-check.
+    """
+    raw_bytes = base64.b64decode(image_b64)
+    try:
+        with Image.open(BytesIO(raw_bytes)) as image:
+            rgb = image.convert("RGB")
+            for max_edge in _SHRINK_MAX_EDGES:
+                rgb.thumbnail((max_edge, max_edge))
+                for quality in _SHRINK_QUALITY_STEPS:
+                    buffer = BytesIO()
+                    rgb.save(buffer, format="JPEG", quality=quality)
+                    encoded = buffer.getvalue()
+                    if len(encoded) <= DASHSCOPE_JPEG_TARGET_BYTES:
+                        logger.info(
+                            "Re-encoded camera image for DashScope: %d -> %d bytes (edge<=%d, q=%d)",
+                            len(raw_bytes),
+                            len(encoded),
+                            max_edge,
+                            quality,
+                        )
+                        return base64.b64encode(encoded).decode("utf-8")
+    except Exception as e:
+        logger.error("Failed to re-encode camera image for DashScope: %s", e)
+    return image_b64
+
+
+def _extract_image_buffer_payloads(event: Mapping[str, Any]) -> list[str]:
+    """Return base64 payloads of the data-URL images a user message item carries."""
+    item = event.get("item")
+    if not isinstance(item, Mapping) or item.get("type") != "message" or item.get("role") != "user":
+        return []
+    content = item.get("content")
+    if not isinstance(content, list):
+        return []
+    payloads: list[str] = []
+    for part in content:
+        if not isinstance(part, Mapping):
+            continue
+        if part.get("type") == "input_image":
+            payload = _data_url_base64_payload(part.get("image_url"))
+            if payload is None:
+                logger.warning(
+                    "DashScope image input only supports base64 data URLs; dropping %s",
+                    str(part.get("image_url"))[:80],
+                )
+            else:
+                payloads.append(payload)
+        elif part.get("type") is not None:
+            logger.warning("DashScope image messages cannot carry %s parts; dropping it", part.get("type"))
+    return payloads
+
+
 class _TranscriptDeltaState:
     """Track confirmed transcript prefixes so DashScope snapshots become deltas."""
 
@@ -140,6 +230,8 @@ class DashScopeConnection(AsyncRealtimeConnection):
         # garbles long function names (observed duplicated prefixes), so only
         # short aliases travel to the model and call events map back.
         self._tool_aliases: dict[str, str] = {}
+        # Last turn detection the app configured, restored after an image turn.
+        self._app_turn_detection: dict[str, Any] | None = None
 
     def _alias_session_tools(self, session: dict[str, Any]) -> dict[str, Any]:
         """Replace namespaced tool names with short unique aliases."""
@@ -172,6 +264,13 @@ class DashScopeConnection(AsyncRealtimeConnection):
         """Send a client event, flattening session updates for DashScope."""
         if isinstance(event, dict) and event.get("type") == "session.update":
             normalized = normalize_session(event.get("session") or {})
+            if config.DASHSCOPE_TEMPERATURE is not None:
+                # The flash realtime model wanders between calling the camera
+                # tool and improvising an answer; a configured temperature pins
+                # it down. DashScope-only: the OpenAI/HF session shape is untouched.
+                normalized["temperature"] = config.DASHSCOPE_TEMPERATURE
+            if "turn_detection" in normalized:
+                self._app_turn_detection = normalized["turn_detection"]
             if isinstance(normalized.get("tools"), list):
                 # A full update re-registers the tools; rebuild the alias map.
                 self._tool_aliases.clear()
@@ -187,7 +286,83 @@ class DashScopeConnection(AsyncRealtimeConnection):
             }
             await self._connection.send(json.dumps(payload))
             return
+        if isinstance(event, dict) and event.get("type") == "conversation.item.create":
+            image_payloads = _extract_image_buffer_payloads(event)
+            if image_payloads:
+                # conversation.item.create only carries function_call_output on
+                # DashScope; images ride the input image buffer instead.
+                await self._deliver_images_via_audio_buffer(image_payloads)
+                return
         await super().send(event)
+
+    async def _deliver_images_via_audio_buffer(self, image_payloads: list[str]) -> None:
+        """Append images to the input image buffer and commit them into the conversation.
+
+        DashScope only commits the image buffer together with a non-empty audio
+        buffer, and its server VAD discards non-speech audio — a silently
+        waiting user would make the commit fail. So the connection briefly
+        switches to manual turn detection, appends one second of synthetic
+        room noise (only sent to the server, never played on the robot), and
+        restores the app's turn detection once the images are committed.
+        """
+        await self._connection.send(self._dashscope_session_payload({"turn_detection": None}))
+        room_noise = np.random.randint(-600, 600, HuggingFaceRealtimeHandler.SAMPLE_RATE, dtype=np.int16)
+        await self._connection.send(
+            json.dumps(
+                {
+                    "type": "input_audio_buffer.append",
+                    "event_id": f"event_{uuid.uuid4().hex}",
+                    "audio": base64.b64encode(room_noise.tobytes()).decode("utf-8"),
+                }
+            )
+        )
+        sent_any_image = False
+        for image_payload in image_payloads:
+            if len(image_payload) > DASHSCOPE_IMAGE_B64_SAFE_BYTES:
+                image_payload = _shrink_image_payload(image_payload)
+            # An oversized frame would get the whole connection closed (1009).
+            if len(image_payload) > DASHSCOPE_IMAGE_B64_SAFE_BYTES:
+                logger.error(
+                    "Dropping camera image of %d bytes: still above DashScope's %d byte frame limit after re-encoding",
+                    len(image_payload),
+                    DASHSCOPE_FRAME_LIMIT_BYTES,
+                )
+                continue
+            await self._connection.send(
+                json.dumps(
+                    {
+                        "type": "input_image_buffer.append",
+                        "event_id": f"event_{uuid.uuid4().hex}",
+                        "image": image_payload,
+                    }
+                )
+            )
+            sent_any_image = True
+        if sent_any_image:
+            await self._connection.send(
+                json.dumps(
+                    {
+                        "type": "input_audio_buffer.commit",
+                        "event_id": f"event_{uuid.uuid4().hex}",
+                    }
+                )
+            )
+        await self._connection.send(
+            self._dashscope_session_payload(
+                {"turn_detection": self._app_turn_detection or dict(_DEFAULT_TURN_DETECTION)}
+            )
+        )
+
+    @staticmethod
+    def _dashscope_session_payload(session: dict[str, Any]) -> str:
+        """Wrap an already DashScope-shaped partial session in an update event."""
+        return json.dumps(
+            {
+                "type": "session.update",
+                "event_id": f"event_{uuid.uuid4().hex}",
+                "session": session,
+            }
+        )
 
     def _translate_payload(self, raw: Mapping[str, Any]) -> dict[str, Any]:
         """Return the payload rewritten with modern event names and app-rate audio."""

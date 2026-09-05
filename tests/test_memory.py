@@ -100,6 +100,6 @@ def test_prompt_includes_memory_fragment(tmp_path: Path, monkeypatch: pytest.Mon
 
     instructions = prompts_mod.get_session_instructions(instance_path=tmp_path)
 
-    assert instructions.startswith("Things you remember about the user")
+    assert "Things you remember about the user" in instructions
     assert "- Prefers concise answers" in instructions
     assert "## IDENTITY" in instructions

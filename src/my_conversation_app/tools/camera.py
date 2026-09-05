@@ -14,6 +14,8 @@ class Camera(Tool):
     name = "camera"
     description = (
         "Take a picture with the camera to see what is in front of the robot. "
+        "This tool is your only eyes — call it BEFORE answering any visual question; "
+        "never claim you cannot see. "
         "Use this when the user asks you to look at something, see what they are holding, "
         "check their appearance, describe the scene, or comment on how they look. "
         "Also use it when the user asks what you can see or wants your visual opinion. "

@@ -86,6 +86,26 @@ ASSISTANT_RESULT_RELAY_PROMPT = (
     "it didn't work out this time. Never announce waiting or checking again."
 )
 
+# Omni realtime models are vision-capable but receive no live video in this app;
+# without a hard rule they either hallucinate what they "see" or refuse the
+# question instead of calling the camera tool (both observed with
+# qwen3.5-omni-flash-realtime, roughly a coin flip under 18-tool competition
+# until the few-shot example below was added).
+CAMERA_TOOL_RULE = (
+    "## VISION RULE (CRITICAL)\n"
+    "You DO have a working camera — the `camera` tool IS your eyes. It is the ONLY way "
+    "you can see anything. The moment the user asks anything visual — what do you see, "
+    "what am I wearing or holding, how do I look, how many people are here, 看看/看到/"
+    "你看得见吗 — your FIRST action is to call `camera`. Do not answer from imagination, "
+    "do not say you cannot see or have no camera, do not role-play looking, do not ask "
+    "the user to describe it for you. Only after the photo returns may you answer, and "
+    "only from what the photo shows. If the tool result reports an error, tell the user "
+    "the camera is not working right now.\n"
+    'Example: the user asks "你看我穿的是什么颜色的衣服" — you call '
+    'camera(question="the color of the user\'s clothes") FIRST, then answer from the '
+    "photo. Answering that question without calling `camera` first is always wrong."
+)
+
 
 def _active_profile() -> ProfileDefinition:
     return read_profile(config.REACHY_MINI_CUSTOM_PROFILE)
@@ -112,9 +132,14 @@ def get_session_instructions(instance_path: str | Path | None = None) -> str:
         raise RuntimeError("Default profile has no usable instructions")
 
     memory_prompt = format_memory_for_prompt(instance_path)
-    if memory_prompt:
-        return f"{memory_prompt}\n\n{instructions}"
-    return instructions
+    # The vision rule leads the instructions: measured 5/5 camera-tool calls for
+    # visual questions with qwen3.5-omni-flash-realtime, vs 3/5 at the tail.
+    parts = [part for part in (CAMERA_TOOL_RULE, memory_prompt, instructions) if part]
+    combined = "\n\n".join(parts)
+    logger.info(
+        "Session instructions: %d chars, vision rule at offset %d", len(combined), combined.find("## VISION RULE")
+    )
+    return combined
 
 
 def get_session_voice(default: str | None = None) -> str:

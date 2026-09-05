@@ -67,8 +67,26 @@ DASHSCOPE_API_KEY_ENV = "DASHSCOPE_API_KEY"
 DASHSCOPE_REALTIME_MODEL_ENV = "DASHSCOPE_REALTIME_MODEL"
 DASHSCOPE_REALTIME_WS_BASE_ENV = "DASHSCOPE_REALTIME_WS_BASE"
 DASHSCOPE_REALTIME_VOICE_ENV = "DASHSCOPE_REALTIME_VOICE"
+DASHSCOPE_TEMPERATURE_ENV = "DASHSCOPE_TEMPERATURE"
 DASHSCOPE_REALTIME_WS_BASE_DEFAULT = "wss://dashscope.aliyuncs.com/api-ws/v1"
 DASHSCOPE_REALTIME_MODEL_DEFAULT = "qwen3.5-omni-flash-realtime"
+
+
+def resolve_dashscope_temperature() -> float | None:
+    """Read the DashScope session temperature; None keeps the backend default."""
+    raw_value = (os.getenv(DASHSCOPE_TEMPERATURE_ENV) or "").strip()
+    if not raw_value:
+        return None
+    try:
+        temperature = float(raw_value)
+    except ValueError:
+        logger.warning("Ignoring invalid %s=%r; using the backend default.", DASHSCOPE_TEMPERATURE_ENV, raw_value)
+        return None
+    if not 0.0 <= temperature < 2.0:
+        logger.warning("Ignoring out-of-range %s=%r; using the backend default.", DASHSCOPE_TEMPERATURE_ENV, raw_value)
+        return None
+    return temperature
+
 
 # Qwen3.5-Omni-Realtime voice catalog (Alibaba Model Studio voice list;
 # Cherry/Chelsie are qwen3/qwen-omni-turbo only).
@@ -484,6 +502,7 @@ class Config:
         os.getenv(DASHSCOPE_REALTIME_WS_BASE_ENV) or DASHSCOPE_REALTIME_WS_BASE_DEFAULT
     ).rstrip("/")
     DASHSCOPE_REALTIME_VOICE = os.getenv(DASHSCOPE_REALTIME_VOICE_ENV)
+    DASHSCOPE_TEMPERATURE = resolve_dashscope_temperature()
 
     logger.debug(
         "HF mode: %s, HF session URL set: %s, HF direct URL set: %s",
@@ -611,6 +630,7 @@ def refresh_runtime_config_from_env() -> None:
         os.getenv(DASHSCOPE_REALTIME_WS_BASE_ENV) or DASHSCOPE_REALTIME_WS_BASE_DEFAULT
     ).rstrip("/")
     config.DASHSCOPE_REALTIME_VOICE = os.getenv(DASHSCOPE_REALTIME_VOICE_ENV)
+    config.DASHSCOPE_TEMPERATURE = resolve_dashscope_temperature()
     config.REACHY_MINI_CUSTOM_PROFILE = LOCKED_PROFILE or os.getenv("REACHY_MINI_CUSTOM_PROFILE")
     config.WAKE_WORD_ENABLED = _env_flag(WAKE_WORD_ENABLED_ENV, default=True)
     config.WAKE_WORD_MODELS = _normalize_wake_word_models(os.getenv(WAKE_WORD_MODELS_ENV))

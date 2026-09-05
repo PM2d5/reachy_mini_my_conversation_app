@@ -3,16 +3,21 @@
 import json
 import base64
 import asyncio
+from io import BytesIO
 
 import numpy as np
 import pytest
+from PIL import Image
 
 from my_conversation_app.dashscope_realtime import (
+    DASHSCOPE_FRAME_LIMIT_BYTES,
     DASHSCOPE_OUTPUT_SAMPLE_RATE,
+    DASHSCOPE_IMAGE_B64_SAFE_BYTES,
     DashScopeConnection,
     DashScopeRealtimeHandler,
     resample_pcm16,
     normalize_session,
+    _shrink_image_payload,
     _TranscriptDeltaState,
 )
 
@@ -215,6 +220,24 @@ class TestToolNameAliasing:
         asyncio.run(conn.send({"type": "session.update", "session": session}))
         return json.loads(sent[0])
 
+    def test_temperature_rides_along_when_configured(self, monkeypatch):
+        """A configured DashScope temperature is injected into every session update."""
+        from my_conversation_app.config import config
+
+        monkeypatch.setattr(config, "DASHSCOPE_TEMPERATURE", 0.3)
+        conn = _connection()
+        payload = self._sent_payload(conn, {"voice": "Mione"})
+        assert payload["session"]["temperature"] == 0.3
+
+    def test_temperature_absent_without_config(self, monkeypatch):
+        """No configured temperature leaves the session payload untouched."""
+        from my_conversation_app.config import config
+
+        monkeypatch.setattr(config, "DASHSCOPE_TEMPERATURE", None)
+        conn = _connection()
+        payload = self._sent_payload(conn, {"voice": "Mione"})
+        assert "temperature" not in payload["session"]
+
     def test_long_tool_names_are_aliased_and_restored(self):
         """Namespaced tools ship as short aliases and call events map back."""
         conn = _connection()
@@ -290,3 +313,131 @@ def test_partial_session_update_keeps_tool_aliases():
         json.dumps({"type": "response.function_call_arguments.done", "name": "ext0_get_weather", "arguments": "{}"})
     )
     assert event.name == original
+
+
+class TestImageBufferTranslation:
+    """Camera input_image messages become DashScope image buffer events."""
+
+    def _attach_fake_websocket(self, conn: DashScopeConnection) -> list[str]:
+        """Capture every websocket frame the connection emits from now on."""
+        sent: list[str] = []
+
+        class FakeWebsocket:
+            async def send(self, message: str) -> None:
+                sent.append(message)
+
+        conn._connection = FakeWebsocket()  # type: ignore[assignment]
+        return sent
+
+    def _sent_frames(self, conn: DashScopeConnection, event: dict) -> list[dict]:
+        """Capture the websocket frames emitted for a client event."""
+        sent = self._attach_fake_websocket(conn)
+        asyncio.run(conn.send(event))
+        return [json.loads(frame) for frame in sent]
+
+    def _camera_item_create(self, image_b64: str) -> dict:
+        """Return the item.create event the camera tool result triggers."""
+        return {
+            "type": "conversation.item.create",
+            "item": {
+                "type": "message",
+                "role": "user",
+                "content": [{"type": "input_image", "image_url": f"data:image/jpeg;base64,{image_b64}"}],
+            },
+        }
+
+    def test_camera_image_becomes_image_buffer_events(self):
+        """A camera image ships via the image buffer inside a manual turn-detection window."""
+        conn = _connection()
+        frames = self._sent_frames(conn, self._camera_item_create("QUJD"))
+        assert [frame["type"] for frame in frames] == [
+            "session.update",
+            "input_audio_buffer.append",
+            "input_image_buffer.append",
+            "input_audio_buffer.commit",
+            "session.update",
+        ]
+        # Manual mode for the image turn, then the server VAD restored.
+        assert frames[0]["session"]["turn_detection"] is None
+        assert frames[-1]["session"]["turn_detection"] == {"type": "server_vad", "interrupt_response": True}
+        # The image travels as raw base64, without the data URL prefix.
+        assert frames[2]["image"] == "QUJD"
+        # The placeholder audio keeps the commit viable while the user is silent.
+        assert base64.b64decode(frames[1]["audio"])
+
+    def test_camera_image_restores_configured_turn_detection(self):
+        """The turn detection from the app's session.update is restored after the image turn."""
+        conn = _connection()
+        configured = {"type": "server_vad", "interrupt_response": True, "threshold": 0.3}
+        sent = self._attach_fake_websocket(conn)
+        asyncio.run(
+            conn.send(
+                {
+                    "type": "session.update",
+                    "session": {"audio": {"input": {"turn_detection": configured}}},
+                }
+            )
+        )
+        asyncio.run(conn.send(self._camera_item_create("QUJD")))
+        frames = [json.loads(frame) for frame in sent]
+        # First frame is the app session.update; the image turn closes by restoring it.
+        assert frames[-1]["session"]["turn_detection"] == configured
+
+    def test_function_call_output_item_passes_through(self):
+        """function_call_output items keep the OpenAI item.create transport."""
+        conn = _connection()
+        frames = self._sent_frames(
+            conn,
+            {
+                "type": "conversation.item.create",
+                "item": {"type": "function_call_output", "call_id": "call_1", "output": '{"image_attached": true}'},
+            },
+        )
+        assert [frame["type"] for frame in frames] == ["conversation.item.create"]
+        assert frames[0]["item"]["type"] == "function_call_output"
+
+    def test_text_only_message_passes_through(self):
+        """Messages without images (e.g. the relay prompt) keep today's transport."""
+        conn = _connection()
+        frames = self._sent_frames(
+            conn,
+            {
+                "type": "conversation.item.create",
+                "item": {
+                    "type": "message",
+                    "role": "user",
+                    "content": [{"type": "input_text", "text": "Relay the assistant result."}],
+                },
+            },
+        )
+        assert [frame["type"] for frame in frames] == ["conversation.item.create"]
+
+    def test_oversize_image_is_reencoded_under_the_frame_limit(self):
+        """A camera JPEG above DashScope's 256 KiB frame cap ships re-encoded smaller.
+
+        Regression test: the raw 1080p frame used to be sent as-is and DashScope
+        closed the whole websocket with 1009 (message too big).
+        """
+        rng = np.random.default_rng(7)
+        noise = rng.integers(0, 255, (1080, 1920, 3), dtype=np.uint8)
+        raw_buffer = BytesIO()
+        Image.fromarray(noise, "RGB").save(raw_buffer, format="JPEG", quality=95)
+        oversize_b64 = base64.b64encode(raw_buffer.getvalue()).decode("utf-8")
+        assert len(oversize_b64) > DASHSCOPE_IMAGE_B64_SAFE_BYTES
+
+        conn = _connection()
+        frames = self._sent_frames(conn, self._camera_item_create(oversize_b64))
+        image_frames = [frame for frame in frames if frame["type"] == "input_image_buffer.append"]
+        assert len(image_frames) == 1
+        assert len(json.dumps(image_frames[0])) < DASHSCOPE_FRAME_LIMIT_BYTES
+        decoded = Image.open(BytesIO(base64.b64decode(image_frames[0]["image"])))
+        assert max(decoded.size) <= 1280
+        # The commit still closes the image turn.
+        assert frames[-2]["type"] == "input_audio_buffer.commit"
+
+    def test_shrink_payload_returns_original_on_undecodable_image(self, caplog):
+        """A corrupt image is returned unchanged and the failure is logged."""
+        broken_b64 = base64.b64encode(b"not a jpeg").decode("utf-8")
+        with caplog.at_level("ERROR", logger="my_conversation_app.dashscope_realtime"):
+            assert _shrink_image_payload(broken_b64) == broken_b64
+        assert "Failed to re-encode" in caplog.text
