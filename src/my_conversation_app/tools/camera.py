@@ -1,4 +1,5 @@
 import base64
+import asyncio
 import logging
 from typing import Any, Dict
 
@@ -6,6 +7,10 @@ from my_conversation_app.tools.core_tools import Tool, ToolDependencies
 
 
 logger = logging.getLogger(__name__)
+
+# One control-loop tick of the movement manager, plus the poll interval while a
+# commanded motion is still settling.
+_MOTION_SETTLE_POLL_S = 0.05
 
 
 class Camera(Tool):
@@ -19,7 +24,10 @@ class Camera(Tool):
         "Use this when the user asks you to look at something, see what they are holding, "
         "check their appearance, describe the scene, or comment on how they look. "
         "Also use it when the user asks what you can see or wants your visual opinion. "
-        "The camera is live, each call captures the current moment. "
+        "The camera is live, each call captures the current moment, and it waits for any "
+        "head motion to finish before capturing. "
+        "If the user asks about a direction (left, right, up, down), call move_head first "
+        "to point the head there, then call this tool. "
         "If the user asks you to look without saying at what, do not ask for clarification, call this tool and describe what you see. "
     )
     parameters_schema = {
@@ -49,6 +57,13 @@ class Camera(Tool):
         if not deps.camera_enabled:
             logger.error("Camera is disabled")
             return {"error": "Camera is disabled"}
+
+        # A move_head and a camera call can arrive in the same model turn and run as
+        # parallel tasks; wait out any in-flight motion so the frame matches where the
+        # head is pointing instead of catching it mid-turn.
+        await asyncio.sleep(_MOTION_SETTLE_POLL_S)
+        while deps.movement_manager.is_moving():
+            await asyncio.sleep(_MOTION_SETTLE_POLL_S)
 
         jpeg_bytes = deps.reachy_mini.media.get_frame_jpeg()
         if jpeg_bytes is None:

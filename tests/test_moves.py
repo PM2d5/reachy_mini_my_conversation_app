@@ -185,3 +185,33 @@ def test_speaking_anchor_composes_emotions_and_holds_dances_from_neutral() -> No
     manager.state.move_start_time = manager._now()
     head, _, _ = manager._get_primary_pose(manager._now())
     assert np.allclose(head, dance_head)
+
+
+def test_set_moving_state_marks_motion_until_the_deadline() -> None:
+    """set_moving_state(duration) keeps is_moving() True only until the deadline."""
+    robot = MagicMock()
+    manager = MovementManager(robot)
+
+    assert manager.is_moving() is False
+
+    manager._handle_command("set_moving_state", 2.0, manager._now())
+    manager._publish_shared_state()
+    assert manager.is_moving() is True
+
+    # A command whose window already elapsed does not extend the deadline.
+    expired_manager = MovementManager(robot)
+    expired_manager._handle_command("set_moving_state", 2.0, expired_manager._now() - 5.0)
+    expired_manager._publish_shared_state()
+    assert expired_manager.is_moving() is False
+
+
+def test_clear_move_queue_releases_the_motion_deadline() -> None:
+    """Cancelling the queue also cancels the settling wait of a camera capture."""
+    robot = MagicMock()
+    manager = MovementManager(robot)
+
+    manager._handle_command("set_moving_state", 60.0, manager._now())
+    manager._handle_command("clear_queue", None, manager._now())
+    manager._publish_shared_state()
+
+    assert manager.is_moving() is False

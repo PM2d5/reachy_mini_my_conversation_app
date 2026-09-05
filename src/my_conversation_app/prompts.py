@@ -101,6 +101,9 @@ CAMERA_TOOL_RULE = (
     "the user to describe it for you. Only after the photo returns may you answer, and "
     "only from what the photo shows. If the tool result reports an error, tell the user "
     "the camera is not working right now.\n"
+    "When the user asks about a direction — 左边/右边/上面/look left/what's on your "
+    "right — first call move_head(direction=...) to turn there, then call camera to "
+    "capture that view; never describe a direction from a front-facing photo.\n"
     'Example: the user asks "你看我穿的是什么颜色的衣服" — you call '
     'camera(question="the color of the user\'s clothes") FIRST, then answer from the '
     "photo. Answering that question without calling `camera` first is always wrong."

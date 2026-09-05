@@ -2,7 +2,7 @@
 
 > 本文件是 my_conversation_app 当前功能的权威清单。**任何改变应用行为的改动，必须在同一个 PR 里更新本文件**（规则见 `AGENTS.md` 的 *Documentation* 一节）。
 >
-> 最后核对：2026-09-05 · `master`（含 ask_assistant / OpenClaw 对接、天线等待摆动、DashScope 摄像头图像注入、视觉规则指令与会话温度配置）
+> 最后核对：2026-09-05 · `master`（含 ask_assistant / OpenClaw 对接、天线等待摆动、DashScope 摄像头图像注入、视觉规则指令与会话温度配置、转头后注视保持与拍照落位等待）
 
 应用运行在 Reachy Mini SDK（`reachy_mini`）之上：语音进、语音出 + 机器人动作的实时对话应用，带 Web 管理界面、人格系统、长期记忆、可扩展的 LLM 工具体系（含远程 MCP Tool Spaces）。架构图见 `README.md`（源文件 `docs/scheme.mmd`）。
 
@@ -66,7 +66,7 @@
 - **聆听与打断**：服务端 VAD 负责断句；用户一开口（`speech_started`）即本地清空播放队列实现真打断（barge-in），同时冻结天线动作表示"在听"。
 - **转写流**：用户部分/最终转写、助手转写均推送到控制台日志与 JSON-RPC 客户端（`conversation.transcript` 通知）。
 - **回合状态机**：对外广播 `listening / thinking / speaking / ready`（`conversation.turn` 通知），驱动 UI 光球。
-- **工具调用**：模型发起的函数调用全部后台执行（见 §7）；结果回填为 `function_call_output`，仅在工具出错或 `needs_response=True` 时触发一次语音跟进；`camera` 拍到的 JPEG 会作为图片消息重新注入多模态对话。所有人格的会话指令以「视觉规则」开头（`prompts.py` 的 `CAMERA_TOOL_RULE`，含中文触发词与少样本示例）：camera 工具就是模型的眼睛，视觉请求必须先调工具、只依据照片作答，禁止凭空描述或谎称没有摄像头——多模态实时模型（如 Qwen-Omni）否则会直接幻觉作答或拒答而不调工具；该规则置于指令最前（实测置顶 5/5、置尾 3/5 命中工具调用）。
+- **工具调用**：模型发起的函数调用全部后台执行（见 §7）；结果回填为 `function_call_output`，仅在工具出错或 `needs_response=True` 时触发一次语音跟进；`camera` 拍到的 JPEG 会作为图片消息重新注入多模态对话。所有人格的会话指令以「视觉规则」开头（`prompts.py` 的 `CAMERA_TOOL_RULE`，含中文触发词与少样本示例）：camera 工具就是模型的眼睛，视觉请求必须先调工具、只依据照片作答，禁止凭空描述或谎称没有摄像头——多模态实时模型（如 Qwen-Omni）否则会直接幻觉作答或拒答而不调工具；该规则置于指令最前（实测置顶 5/5、置尾 3/5 命中工具调用）；规则同时要求：用户问某个方向（左/右/上/下）有什么时，先 `move_head` 转向、再 `camera` 拍摄，禁止拿正面照片冒充某个方向。
 - **家庭助手等待态**：`ask_assistant`（见 §6）在飞期间，麦克风音频被整体丢弃（服务端 VAD 收不到任何输入，家人闲聊绝不误触发回合），并清空残留输入缓冲；等待期间活动空闲退出（§4）被挂起，结果回来即恢复。工具启动瞬间由应用代播一句垫话——风格池确定性轮换 + 模型自然发挥（机制同唤醒应答 `ASSISTANT_WAIT_ACKNOWLEDGEMENT_PROMPTS`），人设指令明确要求模型不自行播报垫话；垫话以用户消息注入后残留在上下文中，结果回来时紧跟 `function_call_output` 再注入一条转述锚点指令（`ASSISTANT_RESULT_RELAY_PROMPT`），防止模型重复垫话而不转述结果。新会话（含唤醒恢复）会重置滚动对话历史；OpenClaw 侧使用固定会话标识 `reachy-mini`，跨唤醒/重启保持同一个助手会话（靠 OpenClaw 自身的上下文管理记忆早前询问）。请求在飞期间两根天线以进入时的姿态为中心同向左右摆动（幅度 20°、0.6 Hz，`MovementManager.set_busy_sway`）作为"思考中"的可视提示，拿到结果（含超时/网络错误）后经 0.4s 混合平滑归位。
 - **错误恢复**：后端连接失败按指数退避重试 3 次，外层每 5 秒重连，期间 Web UI 保持可用；单次会话内一个时间只有一条活跃回复（对模型的并发 `response.create` 做串行合并与重试）。
 
@@ -125,12 +125,12 @@
 
 | 工具 | 参数 | 作用 |
 |---|---|---|
-| `camera` | `question`（必填） | 拍一帧 JPEG 注入对话让模型"看"眼前事物（需未传 `--no-camera`） |
+| `camera` | `question`（必填） | 拍一帧 JPEG 注入对话让模型"看"眼前事物（需未传 `--no-camera`）。拍摄前等待正在进行的头部动作落位（`is_moving()`），避免同轮 `move_head`+`camera` 并发时拍到转头半途的画面 |
 | `dance` | `move`（20 支可选，省略=随机）、`repeat`（默认 1） | 队列播放舞蹈，非阻塞 |
 | `stop_dance` | `dummy`（必填 true） | 清空动作队列 |
 | `play_emotion` | `emotion`（42 种意图，省略=random） | 播放预录情绪动作（happy/sad/angry/yes/no/goodbye…） |
 | `stop_emotion` | `dummy`（必填 true） | 停止情绪动作 |
-| `move_head` | `direction`（left/right/up/down/front） | 头部转向 |
+| `move_head` | `direction`（left/right/up/down/front） | 头部转向，转到位后注视保持约 4 秒再自然回中；`needs_response=True`，用户询问该方向内容时模型在同一轮接着调 `camera` 描述，纯转向指令则只口头回应 |
 | `sweep_look` | 无 | 头+身体左右环视一周，约 14 秒 |
 | `head_tracking` | `enabled`（必填） | 开关人脸跟随 |
 | `remember` | `fact`（必填，一句以内） | 保存用户事实到长期记忆（§10） |

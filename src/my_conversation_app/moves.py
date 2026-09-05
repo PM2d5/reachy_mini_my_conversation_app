@@ -253,6 +253,7 @@ class MovementManager:
         self._last_listening_blend_time = self._now()
         self._breathing_active = False  # true when breathing move is running or queued
         self._standby = False  # true while tucked into the wake-word standby pose
+        self._motion_until = 0.0  # monotonic deadline of the manually commanded motion
         self._busy_sway = False  # true while a pending tool call wags the antennas
         self._busy_sway_center: Tuple[float, float] = (0.0, 0.0)
         self._busy_sway_start = 0.0
@@ -268,6 +269,7 @@ class MovementManager:
         self._shared_state_lock = threading.Lock()
         self._shared_last_activity_time = self.state.last_activity_time
         self._shared_is_listening = self._is_listening
+        self._shared_motion_until = self._motion_until
         self._status_lock = threading.Lock()
         self._freq_stats = LoopFrequencyStats()
         self._freq_snapshot = LoopFrequencyStats()
@@ -305,6 +307,12 @@ class MovementManager:
             return False
 
         return self._now() - last_activity >= self.idle_inactivity_delay
+
+    def is_moving(self) -> bool:
+        """Return True while a manually commanded motion is still settling."""
+        with self._shared_state_lock:
+            motion_until = self._shared_motion_until
+        return self._now() < motion_until
 
     def set_listening(self, listening: bool) -> None:
         """Enable or disable listening mode without touching shared state directly.
@@ -377,6 +385,7 @@ class MovementManager:
             self.state.current_move = None
             self.state.move_start_time = None
             self._breathing_active = False
+            self._motion_until = 0.0
             logger.info("Cleared move queue and stopped current move")
         elif command == "set_moving_state":
             try:
@@ -384,6 +393,7 @@ class MovementManager:
             except (TypeError, ValueError):
                 logger.warning("Invalid moving state duration: %s", payload)
                 return
+            self._motion_until = max(self._motion_until, current_time + duration)
             self.state.update_activity()
         elif command == "mark_activity":
             self.state.update_activity()
@@ -514,6 +524,7 @@ class MovementManager:
         with self._shared_state_lock:
             self._shared_last_activity_time = self.state.last_activity_time
             self._shared_is_listening = self._is_listening
+            self._shared_motion_until = self._motion_until
 
     def _manage_move_queue(self, current_time: float) -> None:
         """Manage the primary move queue (sequential execution)."""
