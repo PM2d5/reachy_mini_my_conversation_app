@@ -97,13 +97,15 @@ async def test_dangerous_query_is_refused_without_request(monkeypatch: pytest.Mo
 
 
 @pytest.mark.asyncio
-async def test_calendar_deletion_is_not_blocked(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Phrase-level blocking must not catch harmless calendar edits."""
+async def test_calendar_and_memo_deletion_is_not_blocked(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Phrase-level blocking must not catch harmless assistant-domain edits."""
     _configure_openclaw(monkeypatch)
     _install_transport(monkeypatch, lambda request: httpx.Response(200, json=_completion("已删除该日程")))
 
     result = await AskAssistant()(_make_deps(), query="帮我删除明天的日程")
+    assert result["ok"] is True
 
+    result = await AskAssistant()(_make_deps(), query="把我备忘录里的购物清单删掉")
     assert result["ok"] is True
 
 

@@ -22,13 +22,14 @@ BLOCKED_REPLY = "这个操作有风险，请到微信上跟助手说。"
 # Reachy wakes and restarts, so it remembers earlier asks without our help.
 OPENCLAW_SESSION_USER = "reachy-mini"
 
-# Phrase-level patterns: bare "删除" would also catch harmless calendar edits.
+# Phrase-level patterns: bare "删除"/"清空" would also catch harmless calendar and memo edits.
 DANGEROUS_PATTERNS = (
     "删除文件",
     "删掉文件",
     "删除照片",
     "删除电脑",
-    "清空",
+    "清空回收站",
+    "清空磁盘",
     "格式化",
     "卸载",
     "转账",
@@ -108,7 +109,8 @@ class AskAssistant(Tool):
         "口头答应而不调用等于敷衍用户。"
         "宁可多调，禁止凭训练知识编造实时信息，搜不到就明说搜不到。"
         "按信息类型判断是否调用，不看用户措辞。"
-        "本工具只处理查询、问答、记录类任务；用户要求删除文件、卸载软件、发消息、花钱等危险操作时不要调用。"
+        "本工具不处理系统级危险操作（删除电脑文件、卸载软件、发消息、花钱）；"
+        "但日程、提醒、待办、备忘的建立、修改、删除属于助手自己的领域，应正常调用。"
         "只需传 query 参数：把当前问题完整写进 query 即可，最近对话（含上一次结果）由系统自动带给助手。"
     )
     silence_user_audio_while_running = True
