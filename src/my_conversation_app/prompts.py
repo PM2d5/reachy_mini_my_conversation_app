@@ -113,7 +113,8 @@ CAMERA_TOOL_RULE = (
 # Same under-selection problem as the vision rule: asked to "make a sad face"
 # (弄一个伤心的表情), realtime models voice-act the emotion and never touch
 # play_emotion — zero calls across every logged session while move_head,
-# camera, and dance all fire.
+# camera, and dance all fire. Explicit commands now have a local trigger;
+# this rule additionally pushes the model to emote on its own emotional turns.
 EMOTION_TOOL_RULE = (
     "## EXPRESSION RULE (CRITICAL)\n"
     "You DO have a face — the `play_emotion` tool IS how you show expressions. "
@@ -122,11 +123,19 @@ EMOTION_TOOL_RULE = (
     "happy — your FIRST action is to call `play_emotion` with the matching intent "
     "(开心→happy, 伤心/难过→sad, 生气/愤怒→angry, 害怕→scared, 惊讶→surprised, "
     "无聊→bored, 困→sleepy, 点头→yes, 摇头→no; no clear match → random). Only then "
-    "reply, briefly, in that emotion's tone. Never act the emotion out with your "
-    "voice alone — the user watches your head, and answering an expression "
-    "request without calling `play_emotion` first is always wrong.\n"
+    "reply, briefly, in that emotion's tone.\n"
+    "Beyond explicit requests: whenever your reply itself carries a clear, strong "
+    "emotion — comforting someone sad, celebrating good news, apologizing, sharing "
+    "the user's excitement — call `play_emotion` in that same turn, while you "
+    "speak. Skip it on neutral, factual, or task-like turns: a move every turn "
+    "feels mechanical, so emote only when the feeling is genuinely the point.\n"
+    "Never act an emotion out with your voice alone — the user watches your "
+    "head, and answering an expression request without calling `play_emotion` "
+    "first is always wrong.\n"
     'Example: the user asks "弄一个伤心的表情" — you call '
-    'play_emotion(emotion="sad") FIRST, then say one short sad-toned sentence.'
+    'play_emotion(emotion="sad") FIRST, then say one short sad-toned sentence.\n'
+    'Example: the user shares "我的狗狗生病了，我很难过" — you call '
+    'play_emotion(emotion="sad") while you speak, then comfort them gently.'
 )
 
 
