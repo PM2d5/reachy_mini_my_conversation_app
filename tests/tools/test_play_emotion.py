@@ -247,6 +247,8 @@ async def test_play_emotion_queues_random_for_unknown_emotion(
         ("来个开心的表情。", "happy"),
         ("你表演一个害怕的情绪。", "scared"),
         ("做个尴尬的表情", "embarrassed"),
+        ("做一个同意的表情。", "yes"),
+        ("做个不同意的表情。", "no"),
         ("做个表情。", "random"),
         ("来一个表情", "random"),
         ("Can you do a sad emotion?", "sad"),
@@ -343,6 +345,8 @@ def test_match_expression_command_ignores_moodless_performance_requests(transcri
         ("这个消息真是太让人兴奋了！", "excited"),
         ("听到这个消息我特别惊讶", "surprised"),
         ("你别再难过了，都会好起来的。", "sad"),
+        ("我不同意这个做法。", "no"),
+        ("我同意你的看法。", "yes"),
     ],
 )
 def test_match_spoken_emotion_hits_narrated_emotion_words(spoken_text: str, expected_intent: str) -> None:

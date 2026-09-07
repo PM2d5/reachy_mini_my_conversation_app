@@ -211,8 +211,9 @@ _EXPRESSION_COMMAND_INTENTS: tuple[tuple[str, str], ...] = (
     ("疲惫", "tired"),
     ("疲倦", "tired"),
     ("累", "tired"),
-    ("点头", "yes"),
-    ("摇头", "no"),
+    # 不同意 must precede 同意: the shorter word would otherwise match inside it.
+    ("不同意", "no"),
+    ("同意", "yes"),
     ("害羞", "embarrassed"),
     ("尴尬", "embarrassed"),
     ("孤独", "lonely"),
