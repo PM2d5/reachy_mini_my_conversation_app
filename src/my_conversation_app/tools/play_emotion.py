@@ -1,4 +1,5 @@
 import re
+import time
 import random
 import logging
 import unicodedata
@@ -176,6 +177,87 @@ _KEYWORD_INTENTS: tuple[tuple[tuple[str, ...], str], ...] = (
     (("yes", "understanding"), "yes_understanding"),
 )
 
+# Local trigger: realtime models (notably on DashScope) voice-act explicit
+# expression requests instead of calling the tool, in any language, so the
+# app matches the command itself and queues the move deterministically.
+_EXPRESSION_COMMAND_INTENTS: tuple[tuple[str, str], ...] = (
+    ("开心", "happy"),
+    ("高兴", "happy"),
+    ("快乐", "happy"),
+    ("兴奋", "excited"),
+    ("伤心", "sad"),
+    ("难过", "sad"),
+    ("悲伤", "sad"),
+    ("委屈", "sad"),
+    ("沮丧", "downcast"),
+    ("失落", "downcast"),
+    ("低落", "downcast"),
+    ("生气", "angry"),
+    ("愤怒", "angry"),
+    ("恼火", "angry"),
+    ("厌恶", "disgusted"),
+    ("嫌弃", "disgusted"),
+    ("害怕", "scared"),
+    ("恐惧", "scared"),
+    ("焦虑", "anxious"),
+    ("紧张", "anxious"),
+    ("惊讶", "surprised"),
+    ("吃惊", "surprised"),
+    ("震惊", "amazed"),
+    ("无聊", "bored"),
+    ("瞌睡", "sleepy"),
+    ("想睡", "sleepy"),
+    ("困", "sleepy"),
+    ("疲惫", "tired"),
+    ("疲倦", "tired"),
+    ("累", "tired"),
+    ("点头", "yes"),
+    ("摇头", "no"),
+    ("害羞", "embarrassed"),
+    ("尴尬", "embarrassed"),
+    ("孤独", "lonely"),
+    ("孤单", "lonely"),
+    ("喜爱", "loving"),
+    ("感谢", "grateful"),
+    ("感激", "grateful"),
+    ("欢迎", "welcoming"),
+    ("问候", "welcoming"),
+    ("再见", "goodbye"),
+    ("告别", "goodbye"),
+    ("安慰", "calming"),
+    ("安抚", "calming"),
+    ("放心", "relief"),
+    ("不耐烦", "impatient"),
+)
+
+_EXPRESSION_COMMAND_RE = re.compile(
+    r"(?:做|来|弄|表演|展示|秀)一?[个点下段场支]?(?P<emotion_cn>[^，。！？、\s]{0,4}?)的?(?:表情|情绪|动作|emo)"
+    r"|(?:do|make|show|give|perform)\s+(?:me\s+)?an?\s+(?P<emotion_en>[\w-]+)?\s+(?:emotion|face|expression)",
+    re.IGNORECASE,
+)
+
+
+def match_expression_command(transcript: str) -> str | None:
+    """Return the intent for an explicit show-an-expression command, else None.
+
+    Deliberately narrow: only imperative command forms (做个伤心的表情 / do a sad
+    face) match, never emotional small talk. A matched command without a known
+    emotion word returns "random"; an unknown word returns None so the model
+    keeps its chance to handle it.
+    """
+    match = _EXPRESSION_COMMAND_RE.search(transcript)
+    if match is None:
+        return None
+    captured = (match.group("emotion_cn") or "").strip() or (match.group("emotion_en") or "").strip().lower()
+    if not captured:
+        return "random"
+    for word, intent in _EXPRESSION_COMMAND_INTENTS:
+        if word in captured:
+            return intent
+    if captured in EMOTION_INTENTS:
+        return captured
+    return None
+
 
 def _normalize_emotion_key(value: str) -> str:
     """Normalize an emotion request for exact intent and keyword matching."""
@@ -244,7 +326,12 @@ class PlayEmotion(Tool):
                 "type": "string",
                 "enum": list(EMOTION_INTENTS),
                 "description": (
-                    "Compact emotional intent to express. Choose one of the enum values. Use nuanced "
+                    "Compact emotional intent to express. Choose one of the enum values, mapped "
+                    "from the user's words: 开心/高兴→happy, 伤心/难过/悲伤→sad, 沮丧/失落→downcast, "
+                    "生气/愤怒→angry, 害怕→scared, 焦虑/紧张→anxious, 惊讶→surprised, 震惊→amazed, "
+                    "无聊→bored, 困→sleepy, 累→tired, 点头→yes, 摇头→no, 害羞/尴尬→embarrassed, "
+                    "孤独→lonely, 喜爱→loving, 感谢→grateful, 欢迎/问候→welcoming, 再见→goodbye, "
+                    "安慰→calming, 放心→relief, 不耐烦→impatient, 兴奋→excited. Use nuanced "
                     "labels like no_sad, no_excited, no_firm, or yes_understanding when plain yes/no "
                     "loses meaning. Use random if no clear intent fits."
                 ),
@@ -253,6 +340,10 @@ class PlayEmotion(Tool):
         "required": [],
     }
     _library: "RecordedMoves | None" = None
+    # Both the local expression trigger and the model can queue the same move in
+    # one turn; the dedupe window collapses the duplicate whichever fires first.
+    _last_queued_move: tuple[str, float] | None = None
+    _duplicate_queue_window_s = 4.0
 
     async def __call__(self, deps: ToolDependencies, **kwargs: Any) -> Dict[str, Any]:
         """Play a pre-recorded emotion."""
@@ -279,6 +370,22 @@ class PlayEmotion(Tool):
 
             movement_manager = deps.movement_manager
             emotion_move = EmotionQueueMove(emotion_name, library)
+
+            now = time.monotonic()
+            last_queued = PlayEmotion._last_queued_move
+            if (
+                last_queued is not None
+                and last_queued[0] == emotion_name
+                and now - last_queued[1] < PlayEmotion._duplicate_queue_window_s
+            ):
+                logger.info(
+                    "play_emotion: %s already queued %.2fs ago; skipping duplicate",
+                    emotion_name,
+                    now - last_queued[1],
+                )
+                return {"status": "already_queued", "emotion": emotion_name}
+            PlayEmotion._last_queued_move = (emotion_name, now)
+
             movement_manager.queue_move(emotion_move)
 
             return {"status": "queued", "emotion": emotion_name}

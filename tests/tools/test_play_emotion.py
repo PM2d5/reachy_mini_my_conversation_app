@@ -10,7 +10,14 @@ from my_conversation_app.tools.play_emotion import (
     PlayEmotion,
     resolve_emotion_name,
     random_curated_emotion,
+    match_expression_command,
 )
+
+
+@pytest.fixture(autouse=True)
+def _reset_queued_emotion() -> None:
+    """Keep the cross-test dedupe window from leaking between tests."""
+    PlayEmotion._last_queued_move = None
 
 
 AVAILABLE_EMOTIONS = [
@@ -228,3 +235,70 @@ async def test_play_emotion_queues_random_for_unknown_emotion(
     assert "play_emotion: 'contento' did not resolve; using random curated" in caplog.text
     queued_move = movement_manager.queue_move.call_args.args[0]
     assert queued_move.emotion_name == "confused1"
+
+
+@pytest.mark.parametrize(
+    ("transcript", "expected_intent"),
+    [
+        ("做一个伤心的表情。", "sad"),
+        ("做个伤心的表情。", "sad"),
+        ("弄一个伤心的表情。", "sad"),
+        ("来个开心的表情。", "happy"),
+        ("你表演一个害怕的情绪。", "scared"),
+        ("做个尴尬的表情", "embarrassed"),
+        ("做个表情。", "random"),
+        ("来一个表情", "random"),
+        ("Can you do a sad emotion?", "sad"),
+        ("please do an angry face", "angry"),
+        ("Show me a happy expression", "happy"),
+    ],
+)
+def test_match_expression_command_matches_explicit_commands(transcript: str, expected_intent: str) -> None:
+    """Explicit show-an-expression commands resolve to their intent."""
+    assert match_expression_command(transcript) == expected_intent
+
+
+@pytest.mark.parametrize(
+    "transcript",
+    [
+        "我今天很伤心。",
+        "跟我讲讲你伤心的事。",
+        "你现在什么情绪？",
+        "这个表情怎么做？",
+        "再见。",
+        "帮我看看左边有什么。",
+        "do you have emotions?",
+    ],
+)
+def test_match_expression_command_ignores_non_commands(transcript: str) -> None:
+    """Emotional small talk and questions must not trigger the local move."""
+    assert match_expression_command(transcript) is None
+
+
+@pytest.mark.asyncio
+async def test_play_emotion_skips_duplicate_move_within_window(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A local trigger and a model call for the same move queue it only once."""
+
+    class FakeRecordedMoves:
+        def list_moves(self) -> list[str]:
+            return AVAILABLE_EMOTIONS
+
+    class FakeEmotionQueueMove:
+        def __init__(self, emotion_name: str, recorded_moves: FakeRecordedMoves) -> None:
+            self.emotion_name = emotion_name
+
+    monkeypatch.setattr(play_emotion_module, "EMOTION_AVAILABLE", True)
+    monkeypatch.setattr(play_emotion_module, "EmotionQueueMove", FakeEmotionQueueMove)
+
+    movement_manager = MagicMock()
+    deps = ToolDependencies(reachy_mini=MagicMock(), movement_manager=movement_manager)
+
+    tool = PlayEmotion()
+    monkeypatch.setattr(tool, "_library", FakeRecordedMoves())
+
+    first = await tool(deps, emotion="no_sad")
+    duplicate = await tool(deps, emotion="no_sad")
+
+    assert first == {"status": "queued", "emotion": "no_sad1"}
+    assert duplicate == {"status": "already_queued", "emotion": "no_sad1"}
+    assert movement_manager.queue_move.call_count == 1

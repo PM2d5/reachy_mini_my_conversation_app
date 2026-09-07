@@ -110,6 +110,26 @@ CAMERA_TOOL_RULE = (
 )
 
 
+# Same under-selection problem as the vision rule: asked to "make a sad face"
+# (弄一个伤心的表情), realtime models voice-act the emotion and never touch
+# play_emotion — zero calls across every logged session while move_head,
+# camera, and dance all fire.
+EMOTION_TOOL_RULE = (
+    "## EXPRESSION RULE (CRITICAL)\n"
+    "You DO have a face — the `play_emotion` tool IS how you show expressions. "
+    "The moment the user asks you to show, make, or perform an emotion, mood, or "
+    "gesture — 开心/伤心/难过/生气/害怕/惊讶/无聊/困, 点头/摇头, 做个表情/show me "
+    "happy — your FIRST action is to call `play_emotion` with the matching intent "
+    "(开心→happy, 伤心/难过→sad, 生气/愤怒→angry, 害怕→scared, 惊讶→surprised, "
+    "无聊→bored, 困→sleepy, 点头→yes, 摇头→no; no clear match → random). Only then "
+    "reply, briefly, in that emotion's tone. Never act the emotion out with your "
+    "voice alone — the user watches your head, and answering an expression "
+    "request without calling `play_emotion` first is always wrong.\n"
+    'Example: the user asks "弄一个伤心的表情" — you call '
+    'play_emotion(emotion="sad") FIRST, then say one short sad-toned sentence.'
+)
+
+
 def _active_profile() -> ProfileDefinition:
     return read_profile(config.REACHY_MINI_CUSTOM_PROFILE)
 
@@ -137,7 +157,8 @@ def get_session_instructions(instance_path: str | Path | None = None) -> str:
     memory_prompt = format_memory_for_prompt(instance_path)
     # The vision rule leads the instructions: measured 5/5 camera-tool calls for
     # visual questions with qwen3.5-omni-flash-realtime, vs 3/5 at the tail.
-    parts = [part for part in (CAMERA_TOOL_RULE, memory_prompt, instructions) if part]
+    # The expression rule rides right behind it for the same reason.
+    parts = [part for part in (CAMERA_TOOL_RULE, EMOTION_TOOL_RULE, memory_prompt, instructions) if part]
     combined = "\n\n".join(parts)
     logger.info(
         "Session instructions: %d chars, vision rule at offset %d", len(combined), combined.find("## VISION RULE")

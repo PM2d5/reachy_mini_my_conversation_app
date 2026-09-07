@@ -52,6 +52,7 @@ from my_conversation_app.tools.core_tools import (
     ToolDependencies,
     get_tool_specs,
 )
+from my_conversation_app.tools.play_emotion import match_expression_command
 from my_conversation_app.conversation_handler import ConversationHandler
 from my_conversation_app.tools.background_tool_manager import (
     ToolCallRoutine,
@@ -785,6 +786,38 @@ class HuggingFaceRealtimeHandler(ConversationHandler):
             self.connection = None
             self._response_done_event.set()
 
+    async def _maybe_play_expression_command(self, transcript: str) -> None:
+        """Queue the expression locally when the user explicitly asks for one.
+
+        Realtime models (observed on every DashScope model and in Chinese on
+        the HF endpoint) voice-act these requests instead of calling
+        play_emotion, so the app matches the command itself and plays the move
+        deterministically. Runs as an idle tool call: the result stays out of
+        the model conversation and the model just speaks its reply in tone.
+        """
+        intent = match_expression_command(transcript)
+        if intent is None or "play_emotion" not in core_tools.get_tools():
+            return
+        call_id = f"expression-{uuid.uuid4()}"
+        background_tool = await self.tool_manager.start_tool(
+            call_id=call_id,
+            tool_call_routine=ToolCallRoutine(
+                tool_name="play_emotion",
+                args_json_str=json.dumps({"emotion": intent}),
+                deps=self.deps,
+            ),
+            is_idle_tool_call=True,
+        )
+        await self.output_queue.put(
+            AdditionalOutputs(
+                {
+                    "role": "assistant",
+                    "content": (f"🎭 Expression command matched locally: {intent} (id={background_tool.tool_id})"),
+                },
+            ),
+        )
+        logger.info("Local expression trigger: intent=%s transcript=%r", intent, transcript)
+
     async def _run_realtime_session(self) -> None:
         """Establish and manage a single realtime session."""
         tool_specs = get_tool_specs()
@@ -921,6 +954,7 @@ class HuggingFaceRealtimeHandler(ConversationHandler):
 
                         await self.output_queue.put(AdditionalOutputs({"role": "user", "content": transcript}))
                         self._emit_transcript("user", transcript, True)
+                        await self._maybe_play_expression_command(transcript)
 
                     # Handle assistant transcription
                     if event.type == "response.output_audio_transcript.done":

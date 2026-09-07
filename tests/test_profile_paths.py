@@ -80,7 +80,7 @@ def test_prompts_load_from_compact_builtin_profile(tmp_path: Path, monkeypatch: 
     ).instructions
 
     assert prompts_mod.get_session_instructions(instance_path=tmp_path) == (
-        f"{prompts_mod.CAMERA_TOOL_RULE}\n\n{expected}"
+        f"{prompts_mod.CAMERA_TOOL_RULE}\n\n{prompts_mod.EMOTION_TOOL_RULE}\n\n{expected}"
     )
 
 
@@ -94,7 +94,7 @@ def test_default_session_instructions_load_from_default_profile(
     expected = read_profile_from_directory("default", DEFAULT_PROFILES_DIRECTORY / "default").instructions
 
     assert prompts_mod.get_session_instructions(instance_path=tmp_path) == (
-        f"{prompts_mod.CAMERA_TOOL_RULE}\n\n{expected}"
+        f"{prompts_mod.CAMERA_TOOL_RULE}\n\n{prompts_mod.EMOTION_TOOL_RULE}\n\n{expected}"
     )
 
 
@@ -110,7 +110,7 @@ def test_bracketed_prompt_line_stays_plain_text(
     monkeypatch.setattr(config, "REACHY_MINI_CUSTOM_PROFILE", "literal_prompt")
 
     assert prompts_mod.get_session_instructions(instance_path=tmp_path) == (
-        f"{prompts_mod.CAMERA_TOOL_RULE}\n\n[custom_prompt]\n\nStay extra brief."
+        f"{prompts_mod.CAMERA_TOOL_RULE}\n\n{prompts_mod.EMOTION_TOOL_RULE}\n\n[custom_prompt]\n\nStay extra brief."
     )
 
 
@@ -128,7 +128,7 @@ def test_session_instructions_fall_back_to_default_for_incomplete_profile(
     expected = read_profile_from_directory("default", DEFAULT_PROFILES_DIRECTORY / "default").instructions
 
     assert prompts_mod.get_session_instructions(instance_path=tmp_path) == (
-        f"{prompts_mod.CAMERA_TOOL_RULE}\n\n{expected}"
+        f"{prompts_mod.CAMERA_TOOL_RULE}\n\n{prompts_mod.EMOTION_TOOL_RULE}\n\n{expected}"
     )
 
 
@@ -273,7 +273,7 @@ def test_user_profile_round_trips_through_instance_dir(tmp_path: Path, monkeypat
     assert (tmp_path / "user_personalities" / "zen_master" / "profile.md").is_file()
     assert "user_personalities/zen_master" in list_personalities()
     assert prompts_mod.get_session_instructions(instance_path=tmp_path) == (
-        f"{prompts_mod.CAMERA_TOOL_RULE}\n\nBe calm."
+        f"{prompts_mod.CAMERA_TOOL_RULE}\n\n{prompts_mod.EMOTION_TOOL_RULE}\n\nBe calm."
     )
 
 
