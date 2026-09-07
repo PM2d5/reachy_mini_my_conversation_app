@@ -228,26 +228,48 @@ _EXPRESSION_COMMAND_INTENTS: tuple[tuple[str, str], ...] = (
     ("安抚", "calming"),
     ("放心", "relief"),
     ("不耐烦", "impatient"),
+    ("伤感", "sad"),
+    ("搞笑", "happy"),
+    ("好笑", "happy"),
+    ("恐怖", "scared"),
+    ("吓人", "scared"),
 )
+
+# Words that negate the emotion right before them (不开心 must not hit happy).
+# 别 is excluded: it negates verbs (别难过) but ends adverbs (特别惊讶), and a
+# comforting "别难过" emoting concern is acceptable anyway.
+_NEGATION_PREFIXES = "不没无非"
 
 _EXPRESSION_COMMAND_RE = re.compile(
     r"(?:做|来|弄|表演|展示|秀)一?[个点下段场支]?(?P<emotion_cn>[^，。！？、\s]{0,4}?)的?(?:表情|情绪|动作|emo)"
-    r"|(?:do|make|show|give|perform)\s+(?:me\s+)?an?\s+(?P<emotion_en>[\w-]+)?\s+(?:emotion|face|expression)",
+    r"|(?:do|make|show|give|perform)\s+(?:me\s+)?an?\s+(?P<emotion_en>[\w-]+)?\s+(?:emotion|face|expression)"
+    r"|(?:讲|说|来|唱|念|表演)一?[个首段场支]?(?P<performance_emo>[^，。！？、\s]{0,4}?)的?"
+    r"(?P<performance_noun>故事|笑话|段子|童话|绕口令|歌曲|曲子|诗|歌)",
     re.IGNORECASE,
 )
 
+# Performance nouns that carry an inherent mood when the request names none.
+_INHERENT_NOUN_INTENTS: dict[str, str] = {"笑话": "happy", "段子": "happy"}
+
 
 def match_expression_command(transcript: str) -> str | None:
-    """Return the intent for an explicit show-an-expression command, else None.
+    """Return the intent for an explicit show-an-expression or perform-a-mood command, else None.
 
-    Deliberately narrow: only imperative command forms (做个伤心的表情 / do a sad
-    face) match, never emotional small talk. A matched command without a known
-    emotion word returns "random"; an unknown word returns None so the model
-    keeps its chance to handle it.
+    Deliberately narrow: only imperative command forms (做个伤心的表情 / 讲一个
+    悲伤的故事 / do a sad face) match, never emotional small talk. A matched
+    expression command without a known emotion word returns "random"; an
+    unknown word returns None so the model keeps its chance to handle it.
     """
     match = _EXPRESSION_COMMAND_RE.search(transcript)
     if match is None:
         return None
+    performance_noun = match.group("performance_noun")
+    if performance_noun is not None:
+        captured = (match.group("performance_emo") or "").strip()
+        for word, intent in _EXPRESSION_COMMAND_INTENTS:
+            if word in captured:
+                return intent
+        return _INHERENT_NOUN_INTENTS.get(performance_noun)
     captured = (match.group("emotion_cn") or "").strip() or (match.group("emotion_en") or "").strip().lower()
     if not captured:
         return "random"
@@ -257,6 +279,26 @@ def match_expression_command(transcript: str) -> str | None:
     if captured in EMOTION_INTENTS:
         return captured
     return None
+
+
+def match_spoken_emotion(text: str) -> str | None:
+    """Return the intent of the first spoken emotion word, else None.
+
+    Lexical by design: it only sees words the speaker actually says, so wordless
+    sadness never matches. Negated words (不开心) are skipped, and single-char
+    words (困, 累) are ignored because they match inside unrelated words
+    (困难, 拖累). When several words appear, the one said first wins.
+    """
+    first_hit: tuple[int, str] | None = None
+    for word, intent in _EXPRESSION_COMMAND_INTENTS:
+        if len(word) < 2:
+            continue
+        index = text.find(word)
+        while index != -1 and text[max(0, index - 1) : index] in _NEGATION_PREFIXES:
+            index = text.find(word, index + 1)
+        if index != -1 and (first_hit is None or index < first_hit[0]):
+            first_hit = (index, intent)
+    return first_hit[1] if first_hit is not None else None
 
 
 def _normalize_emotion_key(value: str) -> str:

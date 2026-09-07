@@ -52,7 +52,7 @@ from my_conversation_app.tools.core_tools import (
     ToolDependencies,
     get_tool_specs,
 )
-from my_conversation_app.tools.play_emotion import match_expression_command
+from my_conversation_app.tools.play_emotion import match_spoken_emotion, match_expression_command
 from my_conversation_app.conversation_handler import ConversationHandler
 from my_conversation_app.tools.background_tool_manager import (
     ToolCallRoutine,
@@ -165,6 +165,8 @@ class HuggingFaceRealtimeHandler(ConversationHandler):
         self._turn_user_done_at: float | None = None
         self._turn_response_created_at: float | None = None
         self._turn_first_audio_at: float | None = None
+        self._turn_spoken_text = ""
+        self._turn_spoken_emotion_done = False
         self._startup_greeting_sent = False
         self._wake_ack_pending = False
         # Random start so the first wake after every boot does not always land on the same flavor.
@@ -786,17 +788,16 @@ class HuggingFaceRealtimeHandler(ConversationHandler):
             self.connection = None
             self._response_done_event.set()
 
-    async def _maybe_play_expression_command(self, transcript: str) -> None:
-        """Queue the expression locally when the user explicitly asks for one.
+    async def _play_emotion_locally(self, intent: str, source: str) -> None:
+        """Queue a play_emotion move from a local trigger, bypassing the model.
 
         Realtime models (observed on every DashScope model and in Chinese on
-        the HF endpoint) voice-act these requests instead of calling
-        play_emotion, so the app matches the command itself and plays the move
-        deterministically. Runs as an idle tool call: the result stays out of
-        the model conversation and the model just speaks its reply in tone.
+        the HF endpoint) voice-act emotional content instead of calling
+        play_emotion, so the app plays the move itself. Runs as an idle tool
+        call: the result stays out of the model conversation and the model just
+        speaks its reply in tone.
         """
-        intent = match_expression_command(transcript)
-        if intent is None or "play_emotion" not in core_tools.get_tools():
+        if "play_emotion" not in core_tools.get_tools():
             return
         call_id = f"expression-{uuid.uuid4()}"
         background_tool = await self.tool_manager.start_tool(
@@ -812,11 +813,37 @@ class HuggingFaceRealtimeHandler(ConversationHandler):
             AdditionalOutputs(
                 {
                     "role": "assistant",
-                    "content": (f"🎭 Expression command matched locally: {intent} (id={background_tool.tool_id})"),
+                    "content": (f"🎭 {source}: {intent} (id={background_tool.tool_id})"),
                 },
             ),
         )
-        logger.info("Local expression trigger: intent=%s transcript=%r", intent, transcript)
+        logger.info("Local expression trigger: source=%s intent=%s", source, intent)
+
+    async def _maybe_play_expression_command(self, transcript: str) -> None:
+        """Queue the expression when the user explicitly commands one.
+
+        Matches both direct commands (做个伤心的表情) and mood-named performance
+        requests (讲一个悲伤的故事) on the final transcript.
+        """
+        intent = match_expression_command(transcript)
+        if intent is None:
+            return
+        await self._play_emotion_locally(intent, "Expression command matched locally")
+
+    async def _watch_spoken_emotion(self, spoken_text: str) -> None:
+        """Emote when the model's own spoken words name an emotion.
+
+        Lexical by design: the move fires where the narration says the feeling
+        (讲故事的"很难过"), at most once per turn; wordless sadness is the model
+        layer's job.
+        """
+        if self._turn_spoken_emotion_done:
+            return
+        intent = match_spoken_emotion(spoken_text)
+        if intent is None:
+            return
+        self._turn_spoken_emotion_done = True
+        await self._play_emotion_locally(intent, "Spoken emotion matched locally")
 
     async def _run_realtime_session(self) -> None:
         """Establish and manage a single realtime session."""
@@ -873,6 +900,8 @@ class HuggingFaceRealtimeHandler(ConversationHandler):
                         self._turn_user_done_at = None
                         self._turn_response_created_at = None
                         self._turn_first_audio_at = None
+                        self._turn_spoken_text = ""
+                        self._turn_spoken_emotion_done = False
                         if self._clear_queue:
                             self._clear_queue()
                         self.deps.movement_manager.set_listening(True)
@@ -957,9 +986,15 @@ class HuggingFaceRealtimeHandler(ConversationHandler):
                         await self._maybe_play_expression_command(transcript)
 
                     # Handle assistant transcription
+                    if event.type == "response.output_audio_transcript.delta":
+                        self._turn_spoken_text += event.delta
+                        await self._watch_spoken_emotion(self._turn_spoken_text)
+
                     if event.type == "response.output_audio_transcript.done":
                         self._mark_activity("assistant_transcript_done")
                         logger.debug(f"Assistant transcript: {event.transcript}")
+                        # The full transcript also covers backends that skip deltas.
+                        await self._watch_spoken_emotion(event.transcript or self._turn_spoken_text)
                         await self.output_queue.put(
                             AdditionalOutputs({"role": "assistant", "content": event.transcript})
                         )
