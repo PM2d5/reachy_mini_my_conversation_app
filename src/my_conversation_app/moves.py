@@ -363,6 +363,12 @@ class MovementManager:
         """Handle a single cross-thread command."""
         if command == "queue_move":
             if isinstance(payload, Move):
+                if self._standby:
+                    # Standby must hold still; a move queued just after the
+                    # goodbye tuck (e.g. the model's late play_emotion call)
+                    # would pop the head back up before sleep.
+                    logger.info("Dropping move queued during wake-word standby: %s", type(payload).__name__)
+                    return
                 self.move_queue.append(payload)
                 self.state.update_activity()
                 duration = getattr(payload, "duration", None)

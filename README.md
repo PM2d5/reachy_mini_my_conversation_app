@@ -27,15 +27,16 @@ PR whenever a feature changes (see `AGENTS.md`).
 ## Chinese realtime backend (DashScope)
 
 This fork can swap the default Hugging Face realtime backend for Alibaba
-DashScope's Qwen-Omni-Realtime, which transcribes and speaks Chinese natively.
+DashScope's Qwen realtime models (e.g. `qwen3.5-omni-flash-realtime` or
+`qwen-audio-3.0-realtime-plus`), which transcribe and speak Chinese natively.
 Set the following in `.env`:
 
 ```bash
 REALTIME_BACKEND="dashscope"
 DASHSCOPE_API_KEY=sk-...            # required; from Alibaba Model Studio
-# DASHSCOPE_REALTIME_MODEL="qwen3.5-omni-flash-realtime"
+# DASHSCOPE_REALTIME_MODEL="qwen3.5-omni-flash-realtime"  # or qwen-audio-3.0-realtime-plus/flash
 # DASHSCOPE_REALTIME_WS_BASE="wss://dashscope.aliyuncs.com/api-ws/v1"
-# DASHSCOPE_REALTIME_VOICE="Tina"      # 55+ voices: see the DashScope voice list
+# DASHSCOPE_REALTIME_VOICE="Tina"      # voice lists differ per model family; see .env.example
 ```
 
 Leave `REALTIME_BACKEND` unset (or `huggingface`) to keep the default backend.

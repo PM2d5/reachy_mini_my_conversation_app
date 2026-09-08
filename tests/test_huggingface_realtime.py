@@ -692,3 +692,30 @@ async def test_regular_tool_result_gets_no_relay_anchor() -> None:
 
     items = [call.kwargs["item"] for call in handler.connection.conversation.item.create.await_args_list]
     assert [item["type"] for item in items] == ["function_call_output"]
+
+
+@pytest.mark.asyncio
+async def test_tool_result_writeback_swallows_ok_close(monkeypatch: Any) -> None:
+    """A session paused (goodbye standby) just as a tool finishes must not leak a task exception."""
+    from websockets.exceptions import ConnectionClosedOK
+
+    monkeypatch.setattr(hf_mod, "get_session_instructions", lambda _instance_path=None: "test")
+    monkeypatch.setattr(hf_mod, "get_session_voice", lambda default=HF_DEFAULT_VOICE: "Aiden")
+    handler = HuggingFaceRealtimeHandler(ToolDependencies(reachy_mini=MagicMock(), movement_manager=MagicMock()))
+    handler.connection = AsyncMock()
+    handler.connection.conversation.item.create = AsyncMock(side_effect=ConnectionClosedOK(None, None))
+    monkeypatch.setattr(handler, "_wait_for_response_done_before_tool_result", AsyncMock(return_value=True))
+    handler.output_queue = asyncio.Queue()
+
+    await handler._handle_tool_result(
+        ToolNotification(
+            id="call_closed",
+            tool_name="play_emotion",
+            is_idle_tool_call=False,
+            status=ToolState.COMPLETED,
+            result={"status": "queued"},
+        ),
+    )
+
+    assert handler.connection is None
+    assert handler._response_done_event.is_set()

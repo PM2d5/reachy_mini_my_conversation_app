@@ -215,3 +215,18 @@ def test_clear_move_queue_releases_the_motion_deadline() -> None:
     manager._publish_shared_state()
 
     assert manager.is_moving() is False
+
+
+def test_moves_queued_during_standby_are_dropped() -> None:
+    """A late emotion move (goodbye play_emotion) must not pop the head out of the standby tuck."""
+    robot = MagicMock()
+    robot.get_current_head_pose.return_value = create_head_pose(0, 0, 0, 0, 0, 0, degrees=True)
+    robot.get_current_joint_positions.return_value = ([0.0] * 7, [0.0, 0.0])
+    manager = MovementManager(robot)
+
+    manager._handle_command("set_standby", True, manager._now())
+    (tuck_move,) = manager.move_queue
+
+    manager._handle_command("queue_move", _FakeMove(np.eye(4)), manager._now())
+
+    assert list(manager.move_queue) == [tuck_move]

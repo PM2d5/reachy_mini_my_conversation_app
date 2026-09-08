@@ -40,7 +40,7 @@ from openai.resources.realtime.realtime import (
     AsyncRealtimeConnectionManager,
 )
 
-from my_conversation_app.config import config
+from my_conversation_app.config import config, is_dashscope_audio_realtime_model
 from my_conversation_app.huggingface_realtime import HuggingFaceRealtimeHandler
 
 
@@ -444,6 +444,25 @@ class DashScopeRealtimeClient(AsyncOpenAI):
 
 class DashScopeRealtimeHandler(HuggingFaceRealtimeHandler):
     """Realtime handler driving the DashScope Qwen-Omni-Realtime backend."""
+
+    async def change_voice(self, voice: str) -> str:
+        """Apply the voice by session restart on Qwen-Audio realtime models.
+
+        That family only honors ``voice`` in the first session.update after
+        connect, so the live in-place update the base class sends is silently
+        ignored; omni models keep the in-place hot swap.
+        """
+        result = await super().change_voice(voice)
+        if not is_dashscope_audio_realtime_model(getattr(config, "DASHSCOPE_REALTIME_MODEL", None)):
+            return result
+        if self.connection is None:
+            return result
+        try:
+            await self._restart_session()
+        except Exception as exc:
+            logger.warning("Failed to restart session after voice change: %s", exc)
+            return "Voice recorded; will take effect on next connection."
+        return result
 
     async def _build_realtime_client(self) -> AsyncOpenAI:
         """Build the DashScope realtime client from runtime config."""

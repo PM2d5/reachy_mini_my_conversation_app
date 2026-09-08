@@ -149,6 +149,34 @@ DASHSCOPE_AVAILABLE_VOICES: list[str] = [
     "Rocky",
 ]
 
+# Qwen-Audio-Realtime voice catalog (qwen-audio-3.0-realtime-plus/flash;
+# server-reported list, longanqian is the model default). Voice families differ
+# between realtime model families, and an unsupported voice makes DashScope
+# reject the whole session.update — tools included — so voices must resolve
+# per configured model.
+DASHSCOPE_AUDIO_REALTIME_MODEL_PREFIX = "qwen-audio"
+DASHSCOPE_AUDIO_REALTIME_VOICES: list[str] = [
+    "longanqian",
+    "longanlingxin",
+    "longanlufeng",
+    "longanlingxi",
+    "longanxiaoxin",
+    "longanfengyue",
+    "longanyuanfei",
+    "longanhuan_v3.6",
+    "longjielidou_v3.6",
+    "longpaopao_v3.6",
+    "longhuohuo_v3.6",
+    "longchuanshu_v3.6",
+    "loongmary",
+    "loongeva_v3.6",
+    "loongjohn",
+    "daniel",
+    "echo",
+    "hannah",
+    "sherry",
+]
+
 HF_REALTIME_CONNECTION_MODE_ENV = "HF_REALTIME_CONNECTION_MODE"
 HF_REALTIME_WS_URL_ENV = "HF_REALTIME_WS_URL"
 REALTIME_TRANSCRIPTION_LANGUAGE_ENV = "REALTIME_TRANSCRIPTION_LANGUAGE"
@@ -647,20 +675,42 @@ def get_selected_backend() -> str:
     return _normalize_realtime_backend(getattr(config, "REALTIME_BACKEND", None))
 
 
+def is_dashscope_audio_realtime_model(model: str | None) -> bool:
+    """Return whether the model belongs to the Qwen-Audio realtime family."""
+    return (model or "").strip().lower().startswith(DASHSCOPE_AUDIO_REALTIME_MODEL_PREFIX)
+
+
+def _dashscope_voice_catalog() -> list[str]:
+    """Return the voice catalog of the configured DashScope realtime model family."""
+    if is_dashscope_audio_realtime_model(getattr(config, "DASHSCOPE_REALTIME_MODEL", None)):
+        return DASHSCOPE_AUDIO_REALTIME_VOICES
+    return DASHSCOPE_AVAILABLE_VOICES
+
+
 def get_available_voices() -> list[str]:
     """Return the curated voice list for the selected realtime backend."""
     if get_selected_backend() == DASHSCOPE_BACKEND:
-        return list(DASHSCOPE_AVAILABLE_VOICES)
+        return list(_dashscope_voice_catalog())
     return list(HF_AVAILABLE_VOICES)
 
 
 def get_default_voice() -> str:
     """Return the default voice for the selected realtime backend."""
     if get_selected_backend() == DASHSCOPE_BACKEND:
+        catalog = _dashscope_voice_catalog()
         configured = (getattr(config, "DASHSCOPE_REALTIME_VOICE", None) or "").strip()
         if configured:
-            return configured
-        return DASHSCOPE_AVAILABLE_VOICES[0]
+            voice_by_lowercase = {candidate.lower(): candidate for candidate in catalog}
+            matched = voice_by_lowercase.get(configured.lower())
+            if matched is not None:
+                return matched
+            logger.warning(
+                "Voice %r is not available for DashScope model %s; using %s instead.",
+                configured,
+                getattr(config, "DASHSCOPE_REALTIME_MODEL", None),
+                catalog[0],
+            )
+        return catalog[0]
     return HF_DEFAULTS.voice
 
 

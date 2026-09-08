@@ -24,7 +24,7 @@ from openai.types.realtime import (
     RealtimeAudioConfigOutputParam,
     RealtimeSessionCreateRequestParam,
 )
-from websockets.exceptions import ConnectionClosedError
+from websockets.exceptions import ConnectionClosed, ConnectionClosedError
 from openai.types.realtime.realtime_audio_input_turn_detection_param import ServerVad
 
 from my_conversation_app.tools import core_tools
@@ -623,7 +623,7 @@ class HuggingFaceRealtimeHandler(ConversationHandler):
             return
         try:
             await self.connection.input_audio_buffer.clear()
-        except ConnectionClosedError:
+        except ConnectionClosed:
             logger.debug("Could not clear input buffer; connection already closed")
 
     def assistant_wait_active(self) -> bool:
@@ -783,8 +783,14 @@ class HuggingFaceRealtimeHandler(ConversationHandler):
                 self._tool_batch_needs_response = False
                 await self._safe_response_create()
 
-        except ConnectionClosedError:
-            logger.warning("Connection closed while sending tool result")
+        except ConnectionClosed:
+            # Covers ConnectionClosedOK too: the session can be paused (goodbye
+            # standby) between a tool finishing and its result being sent back.
+            logger.warning(
+                "Connection closed while sending tool '%s' (id=%s) result",
+                completed_tool.tool_name,
+                completed_tool.id,
+            )
             self.connection = None
             self._response_done_event.set()
 

@@ -2,7 +2,7 @@
 
 > 本文件是 my_conversation_app 当前功能的权威清单。**任何改变应用行为的改动，必须在同一个 PR 里更新本文件**（规则见 `AGENTS.md` 的 *Documentation* 一节）。
 >
-> 最后核对：2026-09-07 · `master`（含表演请求/台词情绪的本地表情触发、情绪对话主动表情、本地表情触发与表情工具去重、表情规则指令、ask_assistant / OpenClaw 对接、天线等待摆动、DashScope 摄像头图像注入、视觉规则指令与会话温度配置、转头后注视保持与拍照落位等待）
+> 最后核对：2026-09-08 · `master`（含待机期间丢弃迟到动作与工具结果回写的连接关闭降级、按模型家族区分的 DashScope 音色目录与跨家族音色回退、表演请求/台词情绪的本地表情触发、情绪对话主动表情、本地表情触发与表情工具去重、表情规则指令、ask_assistant / OpenClaw 对接、天线等待摆动、DashScope 摄像头图像注入、视觉规则指令与会话温度配置、转头后注视保持与拍照落位等待）
 
 应用运行在 Reachy Mini SDK（`reachy_mini`）之上：语音进、语音出 + 机器人动作的实时对话应用，带 Web 管理界面、人格系统、长期记忆、可扩展的 LLM 工具体系（含远程 MCP Tool Spaces）。架构图见 `README.md`（源文件 `docs/scheme.mmd`）。
 
@@ -78,14 +78,14 @@
 
 | | Hugging Face（默认） | DashScope（`dashscope`） |
 |---|---|---|
-| 模型 | 部署在 HF Space 上的后端（Qwen3-TTS CustomVoice） | Qwen-Omni-Realtime，默认 `qwen3.5-omni-flash-realtime` |
+| 模型 | 部署在 HF Space 上的后端（Qwen3-TTS CustomVoice） | Qwen 实时模型，默认 `qwen3.5-omni-flash-realtime`；`DASHSCOPE_REALTIME_MODEL` 可切 `qwen-audio-3.0-realtime-plus/flash`，改 `.env` 重启即切换 |
 | 中文 | 输入转写语言可设 `REALTIME_TRANSCRIPTION_LANGUAGE=zh`（默认 `en`，转写模型 `gpt-4o-transcribe`） | 原生多语言 ASR + 中文语音，无需转写配置 |
-| 语音 | 9 个：Aiden（默认）、Ryan、Dylan、Eric、Ono_Anna、Serena、Sohee、Uncle_Fu、Vivian | 56 个（Tina 默认），完整列表见阿里云文档 |
+| 语音 | 9 个：Aiden（默认）、Ryan、Dylan、Eric、Ono_Anna、Serena、Sohee、Uncle_Fu、Vivian | 按模型家族区分：qwen3.5-omni 56 个（Tina 默认），完整列表见阿里云文档；qwen-audio-3.0-realtime 19 个（longanqian 默认，含 daniel/echo/hannah/sherry）。跨家族音色（env、profile 或启动设置里的）启动时记 warning 并回退到该家族默认，不会让 DashScope 拒绝整条 `session.update`（否则工具会一起丢掉） |
 | 连接 | `deployed`（默认，经 session proxy，支持 `HF_TOKEN` 鉴权）或 `local`（直连 `HF_REALTIME_WS_URL`，如局域网 `ws://host:8765/v1/realtime`） | `wss://dashscope.aliyuncs.com/api-ws/v1`，需 `DASHSCOPE_API_KEY` |
 | 音频 | 16 kHz PCM 原生速率直传 | 输出 24 kHz PCM，客户端线性重采样到 16 kHz；长 MCP 工具名自动改写为短别名 |
 | 视觉 | `camera` 拍照以 `input_image` 消息注入对话 | 连接层把 `input_image` 消息翻译为 `input_image_buffer.append`（纯 base64，单帧/单图 ≤256 KB；超限自动降到 720p/更低质量重编码，仍超限则丢弃并记 error）+ `input_audio_buffer.commit` 提交进对话；因服务端 VAD 只随语音提交图片，注入瞬间短暂切到手动断句并附 1 s 合成噪声（仅上送服务器，不外放），随后恢复原断句配置 |
 
-语音切换和人格切换均为在线热更新（`session.update` + 会话重建，无需重启应用）。
+语音切换和人格切换均为热更新：人格切换总是重建会话；语音切换在 HF 与 DashScope omni 系上在线 `session.update` 即时生效，在 `qwen-audio-3.0-realtime` 系上因该家族只认连接后第一条 `session.update` 的 voice，改为记录音色后自动重建会话（几秒重连，无需重启应用）。
 
 ## 4. 唤醒词与休眠策略
 
@@ -94,7 +94,7 @@
 会话有两个相位，经 `conversation.phase {phase, reason}` 广播：
 
 - **active**：正常聆听对话。首次启动即进入，机器人先问候。
-- **standby**：实时会话暂停，机器人缩头下沉（头部保持水平、不低头，与真正的休眠姿态区分；天线垂落静止，2 s 插值），期间抑制呼吸动作；麦克风只喂给离线唤醒词检测器（openWakeWord，ONNX，16 kHz）。默认唤醒词 **"hi reachy"**，由内置自训模型 `audio/models/hi_reachy.onnx` 检测；说出唤醒词即抬头回中立位（1.5 s 插值）并恢复会话，以极简应答代替重新问候（`WAKE_ACKNOWLEDGEMENT_PROMPTS`：两三个词、跟所讲语言一致，如"我在""干嘛"；每次唤醒是无记忆的新会话，由应用在几种应答风格间轮换并随机起步，保证说法有变化）。
+- **standby**：实时会话暂停，机器人缩头下沉（头部保持水平、不低头，与真正的休眠姿态区分；天线垂落静止，2 s 插值），期间抑制呼吸动作，并丢弃待机期间新排队的动作（如告别后模型迟到的 `play_emotion` 不会再把头顶起来）；麦克风只喂给离线唤醒词检测器（openWakeWord，ONNX，16 kHz）。默认唤醒词 **"hi reachy"**，由内置自训模型 `audio/models/hi_reachy.onnx` 检测；说出唤醒词即抬头回中立位（1.5 s 插值）并恢复会话，以极简应答代替重新问候（`WAKE_ACKNOWLEDGEMENT_PROMPTS`：两三个词、跟所讲语言一致，如"我在""干嘛"；每次唤醒是无记忆的新会话，由应用在几种应答风格间轮换并随机起步，保证说法有变化）。
 
 进入 standby 的两个触发条件：
 
@@ -233,9 +233,9 @@
 |---|---|---|
 | `REALTIME_BACKEND` | `huggingface` | `dashscope` 切换到 Qwen-Omni 中文后端 |
 | `DASHSCOPE_API_KEY` | — | DashScope 必填 |
-| `DASHSCOPE_REALTIME_MODEL` | `qwen3.5-omni-flash-realtime` | |
+| `DASHSCOPE_REALTIME_MODEL` | `qwen3.5-omni-flash-realtime` | 可切 `qwen-audio-3.0-realtime-plus/flash`；音色目录随模型家族切换 |
 | `DASHSCOPE_REALTIME_WS_BASE` | `wss://dashscope.aliyuncs.com/api-ws/v1` | |
-| `DASHSCOPE_REALTIME_VOICE` | `Tina` | 默认音色 |
+| `DASHSCOPE_REALTIME_VOICE` | `Tina` | 默认音色；不在当前模型家族音色表内时回退为家族默认（omni→Tina，qwen-audio-3.0→longanqian） |
 | `DASHSCOPE_TEMPERATURE` | — | DashScope 会话温度（0-2）。调低可显著提高 flash 模型的工具调用稳定性（视觉提问必调 `camera`）；实测 0.3 表现良好。仅注入 DashScope 会话，HF 后端不受影响 |
 | `HF_REALTIME_CONNECTION_MODE` | `deployed` | `deployed` / `local` |
 | `HF_REALTIME_WS_URL` | — | local 模式直连地址（base 或完整 realtime URL） |

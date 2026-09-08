@@ -441,3 +441,55 @@ class TestImageBufferTranslation:
         with caplog.at_level("ERROR", logger="my_conversation_app.dashscope_realtime"):
             assert _shrink_image_payload(broken_b64) == broken_b64
         assert "Failed to re-encode" in caplog.text
+
+
+def _voice_test_handler(monkeypatch, model: str) -> DashScopeRealtimeHandler:
+    """Return a connected DashScope handler bound to the given realtime model."""
+    from unittest.mock import AsyncMock, MagicMock
+
+    from my_conversation_app.config import config
+    from my_conversation_app.tools.core_tools import ToolDependencies
+
+    monkeypatch.setattr(config, "REALTIME_BACKEND", "dashscope")
+    monkeypatch.setattr(config, "DASHSCOPE_REALTIME_MODEL", model)
+    handler = DashScopeRealtimeHandler(ToolDependencies(reachy_mini=MagicMock(), movement_manager=MagicMock()))
+    handler.connection = MagicMock()
+    handler.connection.session.update = AsyncMock()
+    return handler
+
+
+@pytest.mark.asyncio
+async def test_change_voice_restarts_session_on_audio_model(monkeypatch) -> None:
+    """Qwen-Audio realtime only honors voice in the first session.update, so a change restarts the session."""
+    handler = _voice_test_handler(monkeypatch, "qwen-audio-3.0-realtime-plus")
+    restart_calls: list[bool] = []
+
+    async def fake_restart() -> None:
+        restart_calls.append(True)
+
+    monkeypatch.setattr(handler, "_restart_session", fake_restart)
+
+    result = await handler.change_voice("sherry")
+
+    assert restart_calls == [True]
+    assert handler.get_current_voice() == "sherry"
+    assert "sherry" in result
+
+
+@pytest.mark.asyncio
+async def test_change_voice_keeps_in_place_update_on_omni_model(monkeypatch) -> None:
+    """Omni models keep the in-place voice hot swap; no session restart."""
+    handler = _voice_test_handler(monkeypatch, "qwen3.5-omni-flash-realtime")
+    restart_calls: list[bool] = []
+
+    async def fake_restart() -> None:
+        restart_calls.append(True)
+
+    monkeypatch.setattr(handler, "_restart_session", fake_restart)
+
+    result = await handler.change_voice("Serena")
+
+    assert restart_calls == []
+    assert handler.connection.session.update.await_count == 1
+    assert handler.get_current_voice() == "Serena"
+    assert "Serena" in result
