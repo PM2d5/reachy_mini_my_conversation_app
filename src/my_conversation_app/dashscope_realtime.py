@@ -446,8 +446,12 @@ class DashScopeRealtimeHandler(HuggingFaceRealtimeHandler):
     """Realtime handler driving the DashScope Qwen-Omni-Realtime backend."""
 
     def _camera_frame_needs_captioning(self) -> bool:
-        """Qwen-Audio realtime models cannot see images; caption their camera frames."""
-        return is_dashscope_audio_realtime_model(getattr(config, "DASHSCOPE_REALTIME_MODEL", None))
+        """Caption camera frames when a vision model is configured.
+
+        The user opts in via DASHSCOPE_VISION_MODEL, typically because the
+        realtime model (e.g. the Qwen-Audio family) cannot see images.
+        """
+        return bool((getattr(config, "DASHSCOPE_VISION_MODEL", None) or "").strip())
 
     async def change_voice(self, voice: str) -> str:
         """Apply the voice by session restart on Qwen-Audio realtime models.
@@ -470,19 +474,10 @@ class DashScopeRealtimeHandler(HuggingFaceRealtimeHandler):
 
     async def _build_realtime_client(self) -> AsyncOpenAI:
         """Build the DashScope realtime client from runtime config."""
-        model = config.DASHSCOPE_REALTIME_MODEL
-        if is_dashscope_audio_realtime_model(model):
-            # Qwen-Audio realtime bills the token plan, whose endpoint and key
-            # differ from the pay-as-you-go omni subscription.
-            api_key = (config.DASHSCOPE_TOKEN_PLAN_API_KEY or "").strip() or (config.DASHSCOPE_API_KEY or "").strip()
-            ws_base = config.DASHSCOPE_TOKEN_PLAN_WS_BASE
-        else:
-            api_key = (config.DASHSCOPE_API_KEY or "").strip()
-            ws_base = config.DASHSCOPE_REALTIME_WS_BASE
+        api_key = (config.DASHSCOPE_API_KEY or "").strip()
         if not api_key:
-            raise RuntimeError(
-                "DASHSCOPE_API_KEY (or DASHSCOPE_TOKEN_PLAN_API_KEY for Qwen-Audio) "
-                "must be set to use the DashScope realtime backend."
-            )
+            raise RuntimeError("DASHSCOPE_API_KEY must be set to use the DashScope realtime backend.")
+        model = config.DASHSCOPE_REALTIME_MODEL
+        ws_base = config.DASHSCOPE_REALTIME_WS_BASE
         logger.info("Using DashScope realtime backend: model=%s endpoint=%s", model, ws_base)
         return DashScopeRealtimeClient(api_key=api_key, url=f"{ws_base}/realtime?model={model}")

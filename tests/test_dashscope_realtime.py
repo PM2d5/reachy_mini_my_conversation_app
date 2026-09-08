@@ -184,7 +184,6 @@ def test_build_client_requires_api_key(monkeypatch):
     from my_conversation_app.config import config
 
     monkeypatch.setattr(config, "DASHSCOPE_API_KEY", None)
-    monkeypatch.setattr(config, "DASHSCOPE_TOKEN_PLAN_API_KEY", None)
     handler = DashScopeRealtimeHandler.__new__(DashScopeRealtimeHandler)
     with pytest.raises(RuntimeError, match="DASHSCOPE_API_KEY"):
         asyncio.run(handler._build_realtime_client())
@@ -203,40 +202,6 @@ def test_build_client_targets_configured_model(monkeypatch):
 
     manager = client.realtime.connect()
     assert manager._url == "wss://example.test/api-ws/v1/realtime?model=qwen-omni-turbo-realtime-latest"
-
-
-def test_build_client_uses_token_plan_for_audio_model(monkeypatch):
-    """Qwen-Audio realtime bills the token plan endpoint and key."""
-    from my_conversation_app.config import config
-
-    monkeypatch.setattr(config, "DASHSCOPE_API_KEY", "payg-key")
-    monkeypatch.setattr(config, "DASHSCOPE_TOKEN_PLAN_API_KEY", "plan-key")
-    monkeypatch.setattr(config, "DASHSCOPE_REALTIME_MODEL", "qwen-audio-3.0-realtime-plus")
-    monkeypatch.setattr(config, "DASHSCOPE_TOKEN_PLAN_WS_BASE", "wss://token-plan.example/api-ws/v1")
-
-    handler = DashScopeRealtimeHandler.__new__(DashScopeRealtimeHandler)
-    client = asyncio.run(handler._build_realtime_client())
-
-    manager = client.realtime.connect()
-    assert manager._url == "wss://token-plan.example/api-ws/v1/realtime?model=qwen-audio-3.0-realtime-plus"
-    assert client.realtime._headers["Authorization"] == "Bearer plan-key"
-
-
-def test_build_client_keeps_payg_credentials_for_omni_model(monkeypatch):
-    """Omni realtime stays on the pay-as-you-go endpoint even with a token plan configured."""
-    from my_conversation_app.config import config
-
-    monkeypatch.setattr(config, "DASHSCOPE_API_KEY", "payg-key")
-    monkeypatch.setattr(config, "DASHSCOPE_TOKEN_PLAN_API_KEY", "plan-key")
-    monkeypatch.setattr(config, "DASHSCOPE_REALTIME_MODEL", "qwen3.5-omni-flash-realtime")
-    monkeypatch.setattr(config, "DASHSCOPE_REALTIME_WS_BASE", "wss://payg.example/api-ws/v1")
-    monkeypatch.setattr(config, "DASHSCOPE_TOKEN_PLAN_WS_BASE", "wss://token-plan.example/api-ws/v1")
-
-    handler = DashScopeRealtimeHandler.__new__(DashScopeRealtimeHandler)
-    client = asyncio.run(handler._build_realtime_client())
-
-    manager = client.realtime.connect()
-    assert manager._url == "wss://payg.example/api-ws/v1/realtime?model=qwen3.5-omni-flash-realtime"
 
 
 class TestToolNameAliasing:
@@ -532,11 +497,14 @@ async def test_change_voice_keeps_in_place_update_on_omni_model(monkeypatch) -> 
 
 
 @pytest.mark.asyncio
-async def test_camera_frame_is_captioned_on_audio_model(monkeypatch) -> None:
-    """Qwen-Audio cannot see images: the camera frame goes to a vision chat model and only its text comes back."""
+async def test_camera_frame_is_captioned_when_vision_model_configured(monkeypatch) -> None:
+    """With DASHSCOPE_VISION_MODEL set, the frame goes to a vision chat model and only its text comes back."""
     from unittest.mock import AsyncMock
 
+    from my_conversation_app.config import config
+
     handler = _voice_test_handler(monkeypatch, "qwen-audio-3.0-realtime-plus")
+    monkeypatch.setattr(config, "DASHSCOPE_VISION_MODEL", "qwen3.8-flash")
     handler.connection = AsyncMock()
     handler._response_done_event.set()
 
@@ -569,11 +537,14 @@ async def test_camera_frame_is_captioned_on_audio_model(monkeypatch) -> None:
 
 
 @pytest.mark.asyncio
-async def test_camera_frame_is_attached_as_image_on_omni_model(monkeypatch) -> None:
-    """Omni realtime models keep seeing the raw camera frame."""
+async def test_camera_frame_is_attached_as_image_without_vision_model(monkeypatch) -> None:
+    """Without DASHSCOPE_VISION_MODEL the raw frame reaches the realtime model, whatever its family."""
     from unittest.mock import AsyncMock
 
-    handler = _voice_test_handler(monkeypatch, "qwen3.5-omni-flash-realtime")
+    from my_conversation_app.config import config
+
+    handler = _voice_test_handler(monkeypatch, "qwen-audio-3.0-realtime-plus")
+    monkeypatch.setattr(config, "DASHSCOPE_VISION_MODEL", None)
     handler.connection = AsyncMock()
     handler._response_done_event.set()
 

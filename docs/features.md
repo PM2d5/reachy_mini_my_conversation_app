@@ -2,7 +2,7 @@
 
 > 本文件是 my_conversation_app 当前功能的权威清单。**任何改变应用行为的改动，必须在同一个 PR 里更新本文件**（规则见 `AGENTS.md` 的 *Documentation* 一节）。
 >
-> 最后核对：2026-09-08 · `master`（含待机期间丢弃迟到动作与工具结果回写的连接关闭降级、按模型家族区分的 DashScope 音色目录与跨家族音色回退、表演请求/台词情绪的本地表情触发、情绪对话主动表情、本地表情触发与表情工具去重、表情规则指令、ask_assistant / OpenClaw 对接、天线等待摆动、DashScope 摄像头图像注入、qwen-audio 纯音频系的视觉描述中继（qwen3.8-flash）、视觉规则指令与会话温度配置、转头后注视保持与拍照落位等待）
+> 最后核对：2026-09-08 · `master`（含待机期间丢弃迟到动作与工具结果回写的连接关闭降级、按模型家族区分的 DashScope 音色目录与跨家族音色回退、表演请求/台词情绪的本地表情触发、情绪对话主动表情、本地表情触发与表情工具去重、表情规则指令、ask_assistant / OpenClaw 对接、天线等待摆动、DashScope 摄像头图像注入、可选视觉模型的摄像头画面描述中继、视觉规则指令与会话温度配置、转头后注视保持与拍照落位等待）
 
 应用运行在 Reachy Mini SDK（`reachy_mini`）之上：语音进、语音出 + 机器人动作的实时对话应用，带 Web 管理界面、人格系统、长期记忆、可扩展的 LLM 工具体系（含远程 MCP Tool Spaces）。架构图见 `README.md`（源文件 `docs/scheme.mmd`）。
 
@@ -83,7 +83,7 @@
 | 语音 | 9 个：Aiden（默认）、Ryan、Dylan、Eric、Ono_Anna、Serena、Sohee、Uncle_Fu、Vivian | 按模型家族区分：qwen3.5-omni 56 个（Tina 默认），完整列表见阿里云文档；qwen-audio-3.0-realtime 19 个（longanqian 默认，含 daniel/echo/hannah/sherry）。跨家族音色（env、profile 或启动设置里的）启动时记 warning 并回退到该家族默认，不会让 DashScope 拒绝整条 `session.update`（否则工具会一起丢掉） |
 | 连接 | `deployed`（默认，经 session proxy，支持 `HF_TOKEN` 鉴权）或 `local`（直连 `HF_REALTIME_WS_URL`，如局域网 `ws://host:8765/v1/realtime`） | `wss://dashscope.aliyuncs.com/api-ws/v1`，需 `DASHSCOPE_API_KEY` |
 | 音频 | 16 kHz PCM 原生速率直传 | 输出 24 kHz PCM，客户端线性重采样到 16 kHz；长 MCP 工具名自动改写为短别名 |
-| 视觉 | `camera` 拍照以 `input_image` 消息注入对话 | 连接层把 `input_image` 消息翻译为 `input_image_buffer.append`（纯 base64，单帧/单图 ≤256 KB；超限自动降到 720p/更低质量重编码，仍超限则丢弃并记 error）+ `input_audio_buffer.commit` 提交进对话；因服务端 VAD 只随语音提交图片，注入瞬间短暂切到手动断句并附 1 s 合成噪声（仅上送服务器，不外放），随后恢复原断句配置。**qwen-audio 系例外**：该家族是纯音频模型看不见图片，拍照后改由 `DASHSCOPE_VISION_MODEL`（默认 `qwen3.8-flash`，`vision_relay.py`）对画面+问题做图像描述，描述文字作为 `function_call_output` 回填，不再注入图片；描述失败按错误回填，不会中断对话 |
+| 视觉 | `camera` 拍照以 `input_image` 消息注入对话 | 连接层把 `input_image` 消息翻译为 `input_image_buffer.append`（纯 base64，单帧/单图 ≤256 KB；超限自动降到 720p/更低质量重编码，仍超限则丢弃并记 error）+ `input_audio_buffer.commit` 提交进对话；因服务端 VAD 只随语音提交图片，注入瞬间短暂切到手动断句并附 1 s 合成噪声（仅上送服务器，不外放），随后恢复原断句配置。**可选视觉描述中继**：设置了 `DASHSCOPE_VISION_MODEL` 时不注入图片，改由该视觉模型（`vision_relay.py`）对画面+问题做图像描述，描述文字作为 `function_call_output` 回填——供看不见图片的 realtime 模型（qwen-audio 系）使用；描述失败按错误回填，不会中断对话 |
 
 语音切换和人格切换均为热更新：人格切换总是重建会话；语音切换在 HF 与 DashScope omni 系上在线 `session.update` 即时生效，在 `qwen-audio-3.0-realtime` 系上因该家族只认连接后第一条 `session.update` 的 voice，改为记录音色后自动重建会话（几秒重连，无需重启应用）。
 
@@ -235,10 +235,8 @@
 | `DASHSCOPE_API_KEY` | — | DashScope 必填 |
 | `DASHSCOPE_REALTIME_MODEL` | `qwen3.5-omni-flash-realtime` | 可切 `qwen-audio-3.0-realtime-plus/flash`；音色目录随模型家族切换 |
 | `DASHSCOPE_REALTIME_WS_BASE` | `wss://dashscope.aliyuncs.com/api-ws/v1` | |
-| `DASHSCOPE_VISION_MODEL` | `qwen3.8-flash` | qwen-audio 系（纯音频）摄像头画面的图像描述模型：拍照后把画面+问题发给该视觉模型，描述文字以 `function_call_output` 回填对话；omni 系直接看原图不走此路径 |
-| `DASHSCOPE_TOKEN_PLAN_API_KEY` | 回退 `DASHSCOPE_API_KEY` | token 套餐专用 key：qwen-audio 系 realtime 会话与视觉描述调用优先用它计费；omni 系始终用 `DASHSCOPE_API_KEY`（按量付费） |
-| `DASHSCOPE_TOKEN_PLAN_CHAT_BASE` | `https://dashscope.aliyuncs.com/compatible-mode/v1` | token 套餐 OpenAI 兼容 base（视觉描述实际请求 `<base>/chat/completions`） |
-| `DASHSCOPE_TOKEN_PLAN_WS_BASE` | `wss://dashscope.aliyuncs.com/api-ws/v1` | token 套餐 realtime websocket base，仅 qwen-audio 系使用 |
+| `DASHSCOPE_VISION_MODEL` | 不设 | 可选的摄像头画面图像描述模型（如 `qwen3.8-flash`）：设置后每次拍照都把画面+问题发给该视觉模型（`vision_relay.py`，走 `DASHSCOPE_CHAT_BASE` + `DASHSCOPE_API_KEY`），描述文字以 `function_call_output` 回填对话——供看不见图片的 realtime 模型（qwen-audio 系）使用；不设则把原图注入 realtime 对话（omni 系多模态模型所需），与模型家族无关，由用户按需选择 |
+| `DASHSCOPE_CHAT_BASE` | `https://dashscope.aliyuncs.com/compatible-mode/v1` | 视觉描述调用的 OpenAI 兼容 base（实际请求 `<base>/chat/completions`）；换套餐时与 `DASHSCOPE_API_KEY` 一起由用户自行切换 |
 | `DASHSCOPE_REALTIME_VOICE` | `Tina` | 默认音色；不在当前模型家族音色表内时回退为家族默认（omni→Tina，qwen-audio-3.0→longanqian） |
 | `DASHSCOPE_TEMPERATURE` | — | DashScope 会话温度（0-2）。调低可显著提高 flash 模型的工具调用稳定性（视觉提问必调 `camera`）；实测 0.3 表现良好。仅注入 DashScope 会话，HF 后端不受影响 |
 | `HF_REALTIME_CONNECTION_MODE` | `deployed` | `deployed` / `local` |

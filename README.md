@@ -37,10 +37,8 @@ DASHSCOPE_API_KEY=sk-...            # required; from Alibaba Model Studio
 # DASHSCOPE_REALTIME_MODEL="qwen3.5-omni-flash-realtime"  # or qwen-audio-3.0-realtime-plus/flash
 # DASHSCOPE_REALTIME_WS_BASE="wss://dashscope.aliyuncs.com/api-ws/v1"
 # DASHSCOPE_REALTIME_VOICE="Tina"      # voice lists differ per model family; see .env.example
-# DASHSCOPE_VISION_MODEL="qwen3.8-flash"  # captions camera frames for qwen-audio (audio-only) models
-# DASHSCOPE_TOKEN_PLAN_API_KEY=sk-...      # token-plan key for qwen-audio realtime + vision captions
-# DASHSCOPE_TOKEN_PLAN_CHAT_BASE="https://.../v1"   # token-plan OpenAI-compatible base (chat completions)
-# DASHSCOPE_TOKEN_PLAN_WS_BASE="wss://.../api-ws/v1"  # token-plan realtime websocket base
+# DASHSCOPE_VISION_MODEL="qwen3.8-flash"  # set to caption camera frames via a vision model; unset attaches raw frames
+# DASHSCOPE_CHAT_BASE="https://dashscope.aliyuncs.com/compatible-mode/v1"  # base for those caption calls
 ```
 
 Leave `REALTIME_BACKEND` unset (or `huggingface`) to keep the default backend.
