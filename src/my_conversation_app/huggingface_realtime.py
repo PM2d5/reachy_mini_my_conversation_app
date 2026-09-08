@@ -1136,6 +1136,12 @@ class HuggingFaceRealtimeHandler(ConversationHandler):
                                 AdditionalOutputs({"role": "assistant", "content": f"[error] {msg}"})
                             )
             finally:
+                # A session that dies mid-response (goodbye standby, network
+                # drop) never sees response.done; without this reset the
+                # cleared flag poisons the next session's first manual
+                # response.create, which then stalls for _RESPONSE_DONE_TIMEOUT.
+                self._response_done_event.set()
+
                 # Stop the response sender worker.
                 if response_sender_task is not None:
                     response_sender_task.cancel()

@@ -719,3 +719,27 @@ async def test_tool_result_writeback_swallows_ok_close(monkeypatch: Any) -> None
 
     assert handler.connection is None
     assert handler._response_done_event.is_set()
+
+
+@pytest.mark.asyncio
+async def test_session_exit_resets_response_done_event(monkeypatch: Any) -> None:
+    """A session dying mid-response must not stall the next session's manual response.create.
+
+    response.created clears _response_done_event and only response.done sets it;
+    a goodbye-standby close mid-reply skips response.done. Without a reset on
+    session exit, the next wake acknowledgement's response.create blocks for
+    _RESPONSE_DONE_TIMEOUT (30 s) before force-sending.
+    """
+    monkeypatch.setattr(hf_mod, "get_session_instructions", lambda _instance_path=None: "test")
+    monkeypatch.setattr(hf_mod, "get_session_voice", lambda default=HF_DEFAULT_VOICE: "Aiden")
+    monkeypatch.setattr(hf_mod, "get_tool_specs", lambda: [])
+
+    handler = HuggingFaceRealtimeHandler(ToolDependencies(reachy_mini=MagicMock(), movement_manager=MagicMock()))
+    # The stream ends right after response.created: the reply never finishes.
+    handler.client = _make_fake_realtime_client(events=(_FakeEvent("response.created"),))
+    monkeypatch.setattr(type(handler.tool_manager), "start_up", MagicMock())
+    monkeypatch.setattr(type(handler.tool_manager), "shutdown", AsyncMock())
+
+    await handler._run_realtime_session()
+
+    assert handler._response_done_event.is_set()
