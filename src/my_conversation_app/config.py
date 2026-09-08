@@ -72,7 +72,22 @@ DASHSCOPE_REALTIME_WS_BASE_DEFAULT = "wss://dashscope.aliyuncs.com/api-ws/v1"
 DASHSCOPE_REALTIME_MODEL_DEFAULT = "qwen3.5-omni-flash-realtime"
 DASHSCOPE_VISION_MODEL_ENV = "DASHSCOPE_VISION_MODEL"
 DASHSCOPE_VISION_MODEL_DEFAULT = "qwen3.8-flash"
-DASHSCOPE_CHAT_COMPLETIONS_URL = "https://dashscope.aliyuncs.com/compatible-mode/v1/chat/completions"
+# Qwen-Audio realtime and the vision caption model bill a separate token-plan
+# subscription with its own endpoint and key; omni realtime stays pay-as-you-go
+# on DASHSCOPE_API_KEY / DASHSCOPE_REALTIME_WS_BASE. Both fall back to the
+# official DashScope endpoints when the token-plan vars are unset.
+DASHSCOPE_TOKEN_PLAN_API_KEY_ENV = "DASHSCOPE_TOKEN_PLAN_API_KEY"
+DASHSCOPE_TOKEN_PLAN_CHAT_BASE_ENV = "DASHSCOPE_TOKEN_PLAN_CHAT_BASE"
+DASHSCOPE_TOKEN_PLAN_WS_BASE_ENV = "DASHSCOPE_TOKEN_PLAN_WS_BASE"
+DASHSCOPE_TOKEN_PLAN_CHAT_BASE_DEFAULT = "https://dashscope.aliyuncs.com/compatible-mode/v1"
+DASHSCOPE_TOKEN_PLAN_WS_BASE_DEFAULT = "wss://dashscope.aliyuncs.com/api-ws/v1"
+
+
+def dashscope_vision_credentials() -> tuple[str, str]:
+    """Return (api_key, chat_completions_url) for the vision relay's token plan."""
+    api_key = (config.DASHSCOPE_TOKEN_PLAN_API_KEY or "").strip() or (config.DASHSCOPE_API_KEY or "").strip()
+    base = (config.DASHSCOPE_TOKEN_PLAN_CHAT_BASE or DASHSCOPE_TOKEN_PLAN_CHAT_BASE_DEFAULT).rstrip("/")
+    return api_key, f"{base}/chat/completions"
 
 
 def resolve_dashscope_temperature() -> float | None:
@@ -530,6 +545,13 @@ class Config:
     DASHSCOPE_API_KEY = os.getenv(DASHSCOPE_API_KEY_ENV)
     DASHSCOPE_REALTIME_MODEL = os.getenv(DASHSCOPE_REALTIME_MODEL_ENV) or DASHSCOPE_REALTIME_MODEL_DEFAULT
     DASHSCOPE_VISION_MODEL = os.getenv(DASHSCOPE_VISION_MODEL_ENV) or DASHSCOPE_VISION_MODEL_DEFAULT
+    DASHSCOPE_TOKEN_PLAN_API_KEY = os.getenv(DASHSCOPE_TOKEN_PLAN_API_KEY_ENV)
+    DASHSCOPE_TOKEN_PLAN_CHAT_BASE = (
+        os.getenv(DASHSCOPE_TOKEN_PLAN_CHAT_BASE_ENV) or DASHSCOPE_TOKEN_PLAN_CHAT_BASE_DEFAULT
+    )
+    DASHSCOPE_TOKEN_PLAN_WS_BASE = (
+        os.getenv(DASHSCOPE_TOKEN_PLAN_WS_BASE_ENV) or DASHSCOPE_TOKEN_PLAN_WS_BASE_DEFAULT
+    ).rstrip("/")
     DASHSCOPE_REALTIME_WS_BASE = (
         os.getenv(DASHSCOPE_REALTIME_WS_BASE_ENV) or DASHSCOPE_REALTIME_WS_BASE_DEFAULT
     ).rstrip("/")
@@ -659,6 +681,13 @@ def refresh_runtime_config_from_env() -> None:
     config.DASHSCOPE_API_KEY = os.getenv(DASHSCOPE_API_KEY_ENV)
     config.DASHSCOPE_REALTIME_MODEL = os.getenv(DASHSCOPE_REALTIME_MODEL_ENV) or DASHSCOPE_REALTIME_MODEL_DEFAULT
     config.DASHSCOPE_VISION_MODEL = os.getenv(DASHSCOPE_VISION_MODEL_ENV) or DASHSCOPE_VISION_MODEL_DEFAULT
+    config.DASHSCOPE_TOKEN_PLAN_API_KEY = os.getenv(DASHSCOPE_TOKEN_PLAN_API_KEY_ENV)
+    config.DASHSCOPE_TOKEN_PLAN_CHAT_BASE = (
+        os.getenv(DASHSCOPE_TOKEN_PLAN_CHAT_BASE_ENV) or DASHSCOPE_TOKEN_PLAN_CHAT_BASE_DEFAULT
+    )
+    config.DASHSCOPE_TOKEN_PLAN_WS_BASE = (
+        os.getenv(DASHSCOPE_TOKEN_PLAN_WS_BASE_ENV) or DASHSCOPE_TOKEN_PLAN_WS_BASE_DEFAULT
+    ).rstrip("/")
     config.DASHSCOPE_REALTIME_WS_BASE = (
         os.getenv(DASHSCOPE_REALTIME_WS_BASE_ENV) or DASHSCOPE_REALTIME_WS_BASE_DEFAULT
     ).rstrip("/")

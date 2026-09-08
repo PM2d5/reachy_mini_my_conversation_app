@@ -11,7 +11,7 @@ from typing import Any
 
 import httpx
 
-from my_conversation_app.config import DASHSCOPE_CHAT_COMPLETIONS_URL, config
+from my_conversation_app.config import config, dashscope_vision_credentials
 from my_conversation_app.tools.ask_assistant import extract_reply
 
 
@@ -26,9 +26,9 @@ VISION_RELAY_PROMPT = (
 
 async def describe_camera_frame(question: str, b64_jpeg: str) -> dict[str, Any]:
     """Answer the camera question from the frame via a vision chat model."""
-    api_key = (config.DASHSCOPE_API_KEY or "").strip()
+    api_key, chat_completions_url = dashscope_vision_credentials()
     if not api_key:
-        logger.warning("Vision relay called but DASHSCOPE_API_KEY is not configured")
+        logger.warning("Vision relay called but no DashScope API key is configured")
         return {"error": "vision_relay_not_configured"}
 
     if not isinstance(b64_jpeg, str):
@@ -38,7 +38,7 @@ async def describe_camera_frame(question: str, b64_jpeg: str) -> dict[str, Any]:
     async with httpx.AsyncClient(timeout=VISION_RELAY_TIMEOUT_S) as client:
         try:
             response = await client.post(
-                DASHSCOPE_CHAT_COMPLETIONS_URL,
+                chat_completions_url,
                 headers={"Authorization": f"Bearer {api_key}"},
                 json={
                     "model": config.DASHSCOPE_VISION_MODEL,

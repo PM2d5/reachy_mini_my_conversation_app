@@ -236,6 +236,9 @@
 | `DASHSCOPE_REALTIME_MODEL` | `qwen3.5-omni-flash-realtime` | 可切 `qwen-audio-3.0-realtime-plus/flash`；音色目录随模型家族切换 |
 | `DASHSCOPE_REALTIME_WS_BASE` | `wss://dashscope.aliyuncs.com/api-ws/v1` | |
 | `DASHSCOPE_VISION_MODEL` | `qwen3.8-flash` | qwen-audio 系（纯音频）摄像头画面的图像描述模型：拍照后把画面+问题发给该视觉模型，描述文字以 `function_call_output` 回填对话；omni 系直接看原图不走此路径 |
+| `DASHSCOPE_TOKEN_PLAN_API_KEY` | 回退 `DASHSCOPE_API_KEY` | token 套餐专用 key：qwen-audio 系 realtime 会话与视觉描述调用优先用它计费；omni 系始终用 `DASHSCOPE_API_KEY`（按量付费） |
+| `DASHSCOPE_TOKEN_PLAN_CHAT_BASE` | `https://dashscope.aliyuncs.com/compatible-mode/v1` | token 套餐 OpenAI 兼容 base（视觉描述实际请求 `<base>/chat/completions`） |
+| `DASHSCOPE_TOKEN_PLAN_WS_BASE` | `wss://dashscope.aliyuncs.com/api-ws/v1` | token 套餐 realtime websocket base，仅 qwen-audio 系使用 |
 | `DASHSCOPE_REALTIME_VOICE` | `Tina` | 默认音色；不在当前模型家族音色表内时回退为家族默认（omni→Tina，qwen-audio-3.0→longanqian） |
 | `DASHSCOPE_TEMPERATURE` | — | DashScope 会话温度（0-2）。调低可显著提高 flash 模型的工具调用稳定性（视觉提问必调 `camera`）；实测 0.3 表现良好。仅注入 DashScope 会话，HF 后端不受影响 |
 | `HF_REALTIME_CONNECTION_MODE` | `deployed` | `deployed` / `local` |

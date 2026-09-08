@@ -470,10 +470,19 @@ class DashScopeRealtimeHandler(HuggingFaceRealtimeHandler):
 
     async def _build_realtime_client(self) -> AsyncOpenAI:
         """Build the DashScope realtime client from runtime config."""
-        api_key = (config.DASHSCOPE_API_KEY or "").strip()
-        if not api_key:
-            raise RuntimeError("DASHSCOPE_API_KEY must be set to use the DashScope realtime backend.")
         model = config.DASHSCOPE_REALTIME_MODEL
-        ws_base = config.DASHSCOPE_REALTIME_WS_BASE
+        if is_dashscope_audio_realtime_model(model):
+            # Qwen-Audio realtime bills the token plan, whose endpoint and key
+            # differ from the pay-as-you-go omni subscription.
+            api_key = (config.DASHSCOPE_TOKEN_PLAN_API_KEY or "").strip() or (config.DASHSCOPE_API_KEY or "").strip()
+            ws_base = config.DASHSCOPE_TOKEN_PLAN_WS_BASE
+        else:
+            api_key = (config.DASHSCOPE_API_KEY or "").strip()
+            ws_base = config.DASHSCOPE_REALTIME_WS_BASE
+        if not api_key:
+            raise RuntimeError(
+                "DASHSCOPE_API_KEY (or DASHSCOPE_TOKEN_PLAN_API_KEY for Qwen-Audio) "
+                "must be set to use the DashScope realtime backend."
+            )
         logger.info("Using DashScope realtime backend: model=%s endpoint=%s", model, ws_base)
         return DashScopeRealtimeClient(api_key=api_key, url=f"{ws_base}/realtime?model={model}")

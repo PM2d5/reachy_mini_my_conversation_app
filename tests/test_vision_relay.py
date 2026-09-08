@@ -39,6 +39,8 @@ class _FakeAsyncClient:
 async def test_describe_camera_frame_sends_question_and_image(monkeypatch: Any) -> None:
     """The relay posts question + frame to the configured vision chat model."""
     monkeypatch.setattr(config, "DASHSCOPE_API_KEY", "test-key")
+    monkeypatch.setattr(config, "DASHSCOPE_TOKEN_PLAN_API_KEY", None)
+    monkeypatch.setattr(config, "DASHSCOPE_TOKEN_PLAN_CHAT_BASE", "https://dashscope.aliyuncs.com/compatible-mode/v1")
     monkeypatch.setattr(config, "DASHSCOPE_VISION_MODEL", "qwen3.8-flash")
     monkeypatch.setattr(vision_relay.httpx, "AsyncClient", _FakeAsyncClient)
 
@@ -56,9 +58,25 @@ async def test_describe_camera_frame_sends_question_and_image(monkeypatch: Any) 
 
 
 @pytest.mark.asyncio
+async def test_describe_camera_frame_prefers_token_plan(monkeypatch: Any) -> None:
+    """The vision relay bills the token plan when its key and endpoint are set."""
+    monkeypatch.setattr(config, "DASHSCOPE_API_KEY", "payg-key")
+    monkeypatch.setattr(config, "DASHSCOPE_TOKEN_PLAN_API_KEY", "plan-key")
+    monkeypatch.setattr(config, "DASHSCOPE_TOKEN_PLAN_CHAT_BASE", "https://token-plan.example/v1/")
+    monkeypatch.setattr(vision_relay.httpx, "AsyncClient", _FakeAsyncClient)
+
+    await vision_relay.describe_camera_frame("桌上有什么", "QUJD")
+
+    request = _FakeAsyncClient.last_request
+    assert request["url"] == "https://token-plan.example/v1/chat/completions"
+    assert request["headers"]["Authorization"] == "Bearer plan-key"
+
+
+@pytest.mark.asyncio
 async def test_describe_camera_frame_requires_api_key(monkeypatch: Any) -> None:
     """Without a DashScope key the relay returns an error instead of raising."""
     monkeypatch.setattr(config, "DASHSCOPE_API_KEY", None)
+    monkeypatch.setattr(config, "DASHSCOPE_TOKEN_PLAN_API_KEY", None)
 
     result = await vision_relay.describe_camera_frame("桌上有什么", "QUJD")
 
