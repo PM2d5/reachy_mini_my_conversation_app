@@ -70,4 +70,4 @@ class Camera(Tool):
             logger.error("No frame available from camera")
             return {"error": "No frame available"}
 
-        return {"b64_im": base64.b64encode(jpeg_bytes).decode("utf-8")}
+        return {"b64_im": base64.b64encode(jpeg_bytes).decode("utf-8"), "question": question}

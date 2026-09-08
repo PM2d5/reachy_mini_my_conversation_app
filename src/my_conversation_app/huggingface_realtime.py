@@ -47,6 +47,7 @@ from my_conversation_app.prompts import (
     get_session_greeting_prompt,
 )
 from my_conversation_app.streaming import AdditionalOutputs, audio_to_int16
+from my_conversation_app.vision_relay import describe_camera_frame
 from my_conversation_app.tools.core_tools import (
     ToolSpec,
     ToolDependencies,
@@ -177,6 +178,10 @@ class HuggingFaceRealtimeHandler(ConversationHandler):
         # Call ids of tools that must be waited out in silence (ask_assistant):
         # mic audio is dropped while one runs, so bystander speech never triggers a turn.
         self._silent_wait_call_ids: set[str] = set()
+
+    def _camera_frame_needs_captioning(self) -> bool:
+        """Return whether camera frames must be captioned by a vision chat model."""
+        return False
 
     @staticmethod
     def _sanitize_tool_result_for_model(tool_name: str, tool_result: dict[str, Any]) -> dict[str, Any]:
@@ -675,6 +680,25 @@ class HuggingFaceRealtimeHandler(ConversationHandler):
             tool_result = {"error": "No result returned from tool execution"}
             tool_result_for_model = tool_result
 
+        # Qwen-Audio realtime models are audio-only: instead of attaching the
+        # camera frame to the conversation, have a vision chat model describe
+        # it and relay the description as the tool output text.
+        camera_frame_relayed = False
+        if (
+            completed_tool.tool_name == "camera"
+            and completed_tool.error is None
+            and isinstance(tool_result, dict)
+            and "b64_im" in tool_result
+            and self._camera_frame_needs_captioning()
+        ):
+            question = tool_result.get("question")
+            caption = await describe_camera_frame(
+                question if isinstance(question, str) else "",
+                tool_result["b64_im"],
+            )
+            tool_result_for_model = caption
+            camera_frame_relayed = True
+
         # Connection may have closed while tool was running
         if not self.connection:
             logger.warning(
@@ -735,7 +759,12 @@ class HuggingFaceRealtimeHandler(ConversationHandler):
                 ),
             )
 
-            if model_result_submitted and completed_tool.tool_name == "camera" and "b64_im" in tool_result:
+            if (
+                model_result_submitted
+                and not camera_frame_relayed
+                and completed_tool.tool_name == "camera"
+                and "b64_im" in tool_result
+            ):
                 # use raw base64, don't json.dumps (which adds quotes)
                 b64_im = tool_result["b64_im"]
                 if not isinstance(b64_im, str):

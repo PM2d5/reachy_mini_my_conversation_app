@@ -80,7 +80,7 @@ def _merged_history(managed: List[Dict[str, str]], supplied: List[Dict[str, str]
     return _truncate_history(merged)
 
 
-def _extract_reply(payload: object) -> str:
+def extract_reply(payload: object) -> str:
     """Pull the assistant message text out of an OpenAI-style chat completion body."""
     if not isinstance(payload, dict):
         return ""
@@ -175,7 +175,7 @@ class AskAssistant(Tool):
             return {"ok": False, "error": f"http_{response.status_code}"}
 
         payload: object = response.json()
-        reply = _extract_reply(payload)
+        reply = extract_reply(payload)
         if not reply.strip():
             logger.warning("ask_assistant response had no reply content: %s", str(payload)[:200])
             return {"ok": False, "error": "empty_reply"}

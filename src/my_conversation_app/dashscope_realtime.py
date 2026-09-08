@@ -445,6 +445,10 @@ class DashScopeRealtimeClient(AsyncOpenAI):
 class DashScopeRealtimeHandler(HuggingFaceRealtimeHandler):
     """Realtime handler driving the DashScope Qwen-Omni-Realtime backend."""
 
+    def _camera_frame_needs_captioning(self) -> bool:
+        """Qwen-Audio realtime models cannot see images; caption their camera frames."""
+        return is_dashscope_audio_realtime_model(getattr(config, "DASHSCOPE_REALTIME_MODEL", None))
+
     async def change_voice(self, voice: str) -> str:
         """Apply the voice by session restart on Qwen-Audio realtime models.
 

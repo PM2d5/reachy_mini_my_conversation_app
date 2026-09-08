@@ -20,6 +20,7 @@ from my_conversation_app.dashscope_realtime import (
     _shrink_image_payload,
     _TranscriptDeltaState,
 )
+from my_conversation_app.tools.background_tool_manager import ToolState, ToolNotification
 
 
 class TestNormalizeSession:
@@ -493,3 +494,67 @@ async def test_change_voice_keeps_in_place_update_on_omni_model(monkeypatch) -> 
     assert handler.connection.session.update.await_count == 1
     assert handler.get_current_voice() == "Serena"
     assert "Serena" in result
+
+
+@pytest.mark.asyncio
+async def test_camera_frame_is_captioned_on_audio_model(monkeypatch) -> None:
+    """Qwen-Audio cannot see images: the camera frame goes to a vision chat model and only its text comes back."""
+    from unittest.mock import AsyncMock
+
+    handler = _voice_test_handler(monkeypatch, "qwen-audio-3.0-realtime-plus")
+    handler.connection = AsyncMock()
+    handler._response_done_event.set()
+
+    captured: dict[str, str] = {}
+
+    async def fake_describe(question: str, b64_jpeg: str) -> dict[str, object]:
+        captured["question"] = question
+        captured["b64_jpeg"] = b64_jpeg
+        return {"description": "用户手里拿着一个红色杯子"}
+
+    monkeypatch.setattr("my_conversation_app.huggingface_realtime.describe_camera_frame", fake_describe)
+
+    await handler._handle_tool_result(
+        ToolNotification(
+            id="call-1",
+            tool_name="camera",
+            is_idle_tool_call=False,
+            status=ToolState.COMPLETED,
+            result={"b64_im": "QUJD", "question": "用户拿着什么"},
+        )
+    )
+
+    assert captured == {"question": "用户拿着什么", "b64_jpeg": "QUJD"}
+    output = handler.connection.conversation.item.create.call_args_list[0].kwargs["item"]
+    assert output["type"] == "function_call_output"
+    assert json.loads(output["output"]) == {"description": "用户手里拿着一个红色杯子"}
+    for call in handler.connection.conversation.item.create.call_args_list:
+        content = call.kwargs["item"].get("content")
+        assert not any(isinstance(part, dict) and part.get("type") == "input_image" for part in content or [])
+
+
+@pytest.mark.asyncio
+async def test_camera_frame_is_attached_as_image_on_omni_model(monkeypatch) -> None:
+    """Omni realtime models keep seeing the raw camera frame."""
+    from unittest.mock import AsyncMock
+
+    handler = _voice_test_handler(monkeypatch, "qwen3.5-omni-flash-realtime")
+    handler.connection = AsyncMock()
+    handler._response_done_event.set()
+
+    await handler._handle_tool_result(
+        ToolNotification(
+            id="call-1",
+            tool_name="camera",
+            is_idle_tool_call=False,
+            status=ToolState.COMPLETED,
+            result={"b64_im": "QUJD", "question": "用户拿着什么"},
+        )
+    )
+
+    items = [call.kwargs["item"] for call in handler.connection.conversation.item.create.call_args_list]
+    assert any(
+        isinstance(part, dict) and part.get("type") == "input_image"
+        for item in items
+        for part in (item.get("content") or [])
+    )
