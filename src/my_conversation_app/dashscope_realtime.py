@@ -451,7 +451,7 @@ class DashScopeRealtimeHandler(HuggingFaceRealtimeHandler):
         The user opts in via DASHSCOPE_VISION_MODEL, typically because the
         realtime model (e.g. the Qwen-Audio family) cannot see images.
         """
-        return bool((getattr(config, "DASHSCOPE_VISION_MODEL", None) or "").strip())
+        return bool((config.DASHSCOPE_VISION_MODEL or "").strip())
 
     async def change_voice(self, voice: str) -> str:
         """Apply the voice by session restart on Qwen-Audio realtime models.
