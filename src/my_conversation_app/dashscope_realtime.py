@@ -402,7 +402,12 @@ class _DashScopeConnectionManager(AsyncRealtimeConnectionManager):
 
     async def enter(self) -> DashScopeConnection:
         """Open the DashScope websocket."""
-        websocket = await websockets.connect(self._url, additional_headers=self._headers, max_size=16 * 1024 * 1024)
+        # DashScope endpoints never answer the websocket close handshake, so
+        # the library default (10 s) made every goodbye standby wait out the
+        # full timeout; 2 s caps the stall with no observable side effect.
+        websocket = await websockets.connect(
+            self._url, additional_headers=self._headers, max_size=16 * 1024 * 1024, close_timeout=2.0
+        )
         self._connection = DashScopeConnection(websocket)
         return self._connection
 
