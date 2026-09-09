@@ -12,6 +12,7 @@ from my_conversation_app.tools.play_emotion import (
     resolve_emotion_name,
     random_curated_emotion,
     match_expression_command,
+    is_direct_expression_command,
 )
 
 
@@ -334,6 +335,25 @@ def test_match_expression_command_matches_performance_requests(transcript: str, 
 def test_match_expression_command_ignores_moodless_performance_requests(transcript: str) -> None:
     """A story request with no named mood stays with the model layer."""
     assert match_expression_command(transcript) is None
+
+
+@pytest.mark.parametrize(
+    ("transcript", "expected"),
+    [
+        ("做一个伤心的表情。", True),
+        ("做个表情。", True),
+        ("来一个搞笑的动作", True),
+        ("Can you do a sad face?", True),
+        ("讲一个开心的故事。", False),
+        ("唱首伤心的歌。", False),
+        ("讲个笑话。", False),
+        ("我今天很伤心。", False),
+        ("跟我讲讲你伤心的事。", False),
+    ],
+)
+def test_is_direct_expression_command_splits_bare_commands_from_performances(transcript: str, expected: bool) -> None:
+    """Only bare make-a-face commands count; performance requests and small talk do not."""
+    assert is_direct_expression_command(transcript) is expected
 
 
 @pytest.mark.parametrize(

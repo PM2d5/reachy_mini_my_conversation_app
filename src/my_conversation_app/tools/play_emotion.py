@@ -282,6 +282,12 @@ def match_expression_command(transcript: str) -> str | None:
     return None
 
 
+def is_direct_expression_command(transcript: str) -> bool:
+    """Return True for a bare make-a-face command (做个开心的表情), False for performance requests."""
+    match = _EXPRESSION_COMMAND_RE.search(transcript)
+    return match is not None and match.group("performance_noun") is None
+
+
 def match_spoken_emotion(text: str) -> str | None:
     """Return the intent of the first spoken emotion word, else None.
 

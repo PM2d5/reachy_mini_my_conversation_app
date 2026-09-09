@@ -53,7 +53,11 @@ from my_conversation_app.tools.core_tools import (
     ToolDependencies,
     get_tool_specs,
 )
-from my_conversation_app.tools.play_emotion import match_spoken_emotion, match_expression_command
+from my_conversation_app.tools.play_emotion import (
+    match_spoken_emotion,
+    match_expression_command,
+    is_direct_expression_command,
+)
 from my_conversation_app.conversation_handler import ConversationHandler
 from my_conversation_app.tools.background_tool_manager import (
     ToolCallRoutine,
@@ -166,6 +170,7 @@ class HuggingFaceRealtimeHandler(ConversationHandler):
         self._turn_user_done_at: float | None = None
         self._turn_response_created_at: float | None = None
         self._turn_first_audio_at: float | None = None
+        self._turn_user_transcript = ""
         self._turn_spoken_text = ""
         self._turn_spoken_emotion_done = False
         self._startup_greeting_sent = False
@@ -806,6 +811,17 @@ class HuggingFaceRealtimeHandler(ConversationHandler):
             # Always surface errors, skip the spoken follow-up for tools that opt out.
             if model_result_submitted and (completed_tool.error is not None or tool is None or tool.needs_response):
                 self._tool_batch_needs_response = True
+            # The model sometimes answers a performance request (讲一个开心的故事)
+            # with a play_emotion call and no speech, and the backend does not
+            # resume on its own after the tool result; unless the user asked for
+            # a bare expression, prompt the spoken reply so the turn is not mute.
+            if (
+                model_result_submitted
+                and completed_tool.tool_name == "play_emotion"
+                and self._turn_first_audio_at is None
+                and not is_direct_expression_command(self._turn_user_transcript)
+            ):
+                self._tool_batch_needs_response = True
 
             # Parallel tool calls in one turn: respond once every result is in, not per tool.
             if self._tool_batch_needs_response and not self._in_flight_tool_calls:
@@ -1013,6 +1029,7 @@ class HuggingFaceRealtimeHandler(ConversationHandler):
                         self._turn_user_done_at = time.perf_counter()
                         self._turn_response_created_at = None
                         self._turn_first_audio_at = None
+                        self._turn_user_transcript = transcript
                         self._in_flight_tool_calls.clear()
                         self._tool_batch_needs_response = False
 

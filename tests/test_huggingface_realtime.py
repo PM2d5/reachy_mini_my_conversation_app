@@ -10,6 +10,7 @@ import my_conversation_app.conversation_handler as conv_mod
 import my_conversation_app.huggingface_realtime as hf_mod
 from my_conversation_app.config import config, get_default_voice
 from my_conversation_app.tools.core_tools import ToolDependencies
+from my_conversation_app.tools.play_emotion import PlayEmotion
 from my_conversation_app.huggingface_realtime import HuggingFaceRealtimeHandler
 from my_conversation_app.tools.background_tool_manager import ToolState, ToolNotification
 
@@ -267,6 +268,45 @@ async def test_parallel_tool_calls_trigger_single_response(monkeypatch: Any) -> 
 
     await handler._handle_tool_result(_completed("call_b"))
     assert create.await_count == 1
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("user_transcript", "audio_already_streamed", "expect_reply"),
+    [
+        ("讲一个开心的故事。", False, True),
+        ("做一个开心的表情。", False, False),
+        ("讲一个开心的故事。", True, False),
+    ],
+)
+async def test_silent_play_emotion_reply_policy(
+    monkeypatch: Any, user_transcript: str, audio_already_streamed: bool, expect_reply: bool
+) -> None:
+    """A mute play_emotion-only response must be followed by speech unless the ask was a bare expression."""
+    monkeypatch.setattr(hf_mod, "get_session_instructions", lambda _instance_path=None: "test")
+    monkeypatch.setattr(hf_mod, "get_session_voice", lambda default=HF_DEFAULT_VOICE: "Aiden")
+    monkeypatch.setattr(hf_mod.core_tools, "get_tools", lambda: {"play_emotion": PlayEmotion()})
+
+    handler = HuggingFaceRealtimeHandler(ToolDependencies(reachy_mini=MagicMock(), movement_manager=MagicMock()))
+    handler.connection = AsyncMock()
+    handler.output_queue = asyncio.Queue()
+    monkeypatch.setattr(handler, "_wait_for_response_done_before_tool_result", AsyncMock(return_value=True))
+    create = AsyncMock()
+    monkeypatch.setattr(handler, "_safe_response_create", create)
+
+    handler._turn_user_transcript = user_transcript
+    handler._turn_first_audio_at = time.perf_counter() if audio_already_streamed else None
+
+    notification = ToolNotification(
+        id="call_emotion",
+        tool_name="play_emotion",
+        is_idle_tool_call=False,
+        status=ToolState.COMPLETED,
+        result={"status": "queued", "emotion": "happy1"},
+    )
+    await handler._handle_tool_result(notification)
+
+    assert create.await_count == (1 if expect_reply else 0)
 
 
 def test_handler_uses_hf_startup_voice_at_startup(monkeypatch: Any) -> None:
