@@ -712,23 +712,35 @@ def get_available_voices() -> list[str]:
     return list(HF_AVAILABLE_VOICES)
 
 
+def get_env_configured_voice() -> str | None:
+    """Return the explicitly configured DashScope voice, validated for the model family.
+
+    An explicit ``DASHSCOPE_REALTIME_VOICE`` outranks voices persisted by the
+    settings UI and by profiles, so editing ``.env`` always takes effect after
+    a restart; None keeps those sources in charge.
+    """
+    if get_selected_backend() != DASHSCOPE_BACKEND:
+        return None
+    catalog = _dashscope_voice_catalog()
+    configured = (getattr(config, "DASHSCOPE_REALTIME_VOICE", None) or "").strip()
+    if not configured:
+        return None
+    voice_by_lowercase = {candidate.lower(): candidate for candidate in catalog}
+    matched = voice_by_lowercase.get(configured.lower())
+    if matched is None:
+        logger.warning(
+            "Voice %r is not available for DashScope model %s; using %s instead.",
+            configured,
+            getattr(config, "DASHSCOPE_REALTIME_MODEL", None),
+            catalog[0],
+        )
+    return matched
+
+
 def get_default_voice() -> str:
     """Return the default voice for the selected realtime backend."""
     if get_selected_backend() == DASHSCOPE_BACKEND:
-        catalog = _dashscope_voice_catalog()
-        configured = (getattr(config, "DASHSCOPE_REALTIME_VOICE", None) or "").strip()
-        if configured:
-            voice_by_lowercase = {candidate.lower(): candidate for candidate in catalog}
-            matched = voice_by_lowercase.get(configured.lower())
-            if matched is not None:
-                return matched
-            logger.warning(
-                "Voice %r is not available for DashScope model %s; using %s instead.",
-                configured,
-                getattr(config, "DASHSCOPE_REALTIME_MODEL", None),
-                catalog[0],
-            )
-        return catalog[0]
+        return get_env_configured_voice() or _dashscope_voice_catalog()[0]
     return HF_DEFAULTS.voice
 
 

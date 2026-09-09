@@ -69,3 +69,32 @@ def test_dashscope_default_voice_matches_configured_case_insensitively(monkeypat
     monkeypatch.setattr(config.config, "DASHSCOPE_REALTIME_VOICE", "Sherry")
 
     assert config.get_default_voice() == "sherry"
+
+
+def test_env_configured_voice_validates_against_model_family(monkeypatch) -> None:
+    """The explicit env voice resolves case-insensitively within the family catalog."""
+    monkeypatch.setattr(config.config, "REALTIME_BACKEND", "dashscope")
+    monkeypatch.setattr(config.config, "DASHSCOPE_REALTIME_MODEL", "qwen-audio-3.0-realtime-plus")
+    monkeypatch.setattr(config.config, "DASHSCOPE_REALTIME_VOICE", "Longpaopao_v3.6")
+
+    assert config.get_env_configured_voice() == "longpaopao_v3.6"
+
+
+def test_env_configured_voice_is_none_when_unset_or_foreign(monkeypatch) -> None:
+    """Unset or cross-family env voices step aside instead of overriding other voice sources."""
+    monkeypatch.setattr(config.config, "REALTIME_BACKEND", "dashscope")
+    monkeypatch.setattr(config.config, "DASHSCOPE_REALTIME_MODEL", "qwen-audio-3.0-realtime-plus")
+
+    monkeypatch.setattr(config.config, "DASHSCOPE_REALTIME_VOICE", "")
+    assert config.get_env_configured_voice() is None
+
+    monkeypatch.setattr(config.config, "DASHSCOPE_REALTIME_VOICE", "Aiden")
+    assert config.get_env_configured_voice() is None
+
+
+def test_env_configured_voice_is_none_on_hf_backend(monkeypatch) -> None:
+    """The DashScope env voice must not leak into the Hugging Face backend."""
+    monkeypatch.setattr(config.config, "REALTIME_BACKEND", "huggingface")
+    monkeypatch.setattr(config.config, "DASHSCOPE_REALTIME_VOICE", "longanqian")
+
+    assert config.get_env_configured_voice() is None

@@ -237,7 +237,7 @@
 | `DASHSCOPE_REALTIME_WS_BASE` | `wss://dashscope.aliyuncs.com/api-ws/v1` | |
 | `DASHSCOPE_VISION_MODEL` | 不设 | 可选的摄像头画面图像描述模型（如 `qwen3.8-flash`）：设置后每次拍照都把画面+问题发给该视觉模型（`vision_relay.py`，走 `DASHSCOPE_CHAT_BASE` + `DASHSCOPE_API_KEY`），描述文字以 `function_call_output` 回填对话——供看不见图片的 realtime 模型（qwen-audio 系）使用；不设则把原图注入 realtime 对话（omni 系多模态模型所需），与模型家族无关，由用户按需选择 |
 | `DASHSCOPE_CHAT_BASE` | `https://dashscope.aliyuncs.com/compatible-mode/v1` | 视觉描述调用的 OpenAI 兼容 base（实际请求 `<base>/chat/completions`）；换套餐时与 `DASHSCOPE_API_KEY` 一起由用户自行切换 |
-| `DASHSCOPE_REALTIME_VOICE` | `Tina` | 默认音色；不在当前模型家族音色表内时回退为家族默认（omni→Tina，qwen-audio-3.0→longanqian） |
+| `DASHSCOPE_REALTIME_VOICE` | `Tina` | 显式设置时**优先于** UI 保存的启动音色与 profile 音色（改 `.env` 重启即生效）；不在当前模型家族音色表内时回退为家族默认（omni→Tina，qwen-audio-3.0→longanqian）；运行中在 UI 切换音色仍即时生效 |
 | `DASHSCOPE_TEMPERATURE` | — | DashScope 会话温度（0-2）。调低可显著提高 flash 模型的工具调用稳定性（视觉提问必调 `camera`）；实测 0.3 表现良好。仅注入 DashScope 会话，HF 后端不受影响 |
 | `HF_REALTIME_CONNECTION_MODE` | `deployed` | `deployed` / `local` |
 | `HF_REALTIME_WS_URL` | — | local 模式直连地址（base 或完整 realtime URL） |

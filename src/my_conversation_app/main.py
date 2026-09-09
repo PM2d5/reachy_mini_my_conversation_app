@@ -120,6 +120,17 @@ def run(
         except Exception as e:
             logger.warning("Failed to load startup settings: %s", e)
 
+    from my_conversation_app.config import get_env_configured_voice
+
+    env_voice = get_env_configured_voice()
+    startup_voice = env_voice or startup_settings.voice
+    if env_voice and startup_settings.voice and env_voice.lower() != startup_settings.voice.lower():
+        logger.info(
+            "DASHSCOPE_REALTIME_VOICE=%s overrides the startup settings voice %s",
+            env_voice,
+            startup_settings.voice,
+        )
+
     logger.info(
         "Configured Hugging Face realtime backend, connection mode: %s",
         get_hf_connection_selection().mode,
@@ -194,7 +205,7 @@ def run(
             startup_voice=startup_voice,
         )
 
-    handler = build_handler(startup_settings.voice)
+    handler = build_handler(startup_voice)
 
     stream_manager: LocalStream | None = None
     own_ui_server = None
@@ -216,7 +227,7 @@ def run(
         settings_app=effective_settings_app,
         instance_path=instance_path,
         handler_factory=build_handler,
-        startup_voice=startup_settings.voice,
+        startup_voice=startup_voice,
     )
 
     # The page is served immediately, so the API must be live before the slow startup work below.
