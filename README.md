@@ -86,7 +86,7 @@ pretrained models ("hey mycroft", "alexa", ...) or custom `.onnx` model paths in
 # REACHY_MINI_WAKE_WORD_MODELS=hey_mycroft                 # comma-separated openWakeWord model names or .onnx/.tflite paths
 # REACHY_MINI_WAKE_WORD_THRESHOLD=0.5                      # 0..1, lower = more sensitive
 # REACHY_MINI_WAKE_WORD_ACTIVE_TIMEOUT_S=300               # idle exit delay, 0 disables
-# REACHY_MINI_GOODBYE_KEYWORDS=再见,拜拜,goodbye,bye-bye,bye bye
+# REACHY_MINI_GOODBYE_KEYWORDS=再见,拜拜,滚吧,goodbye,bye-bye,bye bye
 ```
 
 Pretrained models (hey_mycroft, hey_jarvis, alexa, ...) are downloaded automatically

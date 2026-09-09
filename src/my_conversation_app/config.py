@@ -291,7 +291,7 @@ def resolve_openclaw_timeout_s() -> float:
 DEFAULT_WAKE_WORD_MODELS = (BUNDLED_WAKE_WORD_MODEL,)
 DEFAULT_WAKE_WORD_THRESHOLD = 0.5
 DEFAULT_WAKE_WORD_ACTIVE_TIMEOUT_S = 300.0
-DEFAULT_GOODBYE_KEYWORDS = ("再见", "拜拜", "goodbye", "bye-bye", "bye bye")
+DEFAULT_GOODBYE_KEYWORDS = ("再见", "拜拜", "滚吧", "goodbye", "bye-bye", "bye bye")
 
 
 def _normalize_wake_word_models(value: str | None) -> tuple[str, ...]:

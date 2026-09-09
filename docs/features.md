@@ -2,7 +2,7 @@
 
 > 本文件是 my_conversation_app 当前功能的权威清单。**任何改变应用行为的改动，必须在同一个 PR 里更新本文件**（规则见 `AGENTS.md` 的 *Documentation* 一节）。
 >
-> 最后核对：2026-09-09 · `master`（含待机期间丢弃迟到动作与工具结果回写的连接关闭降级、会话退出重置响应完成事件（修复拜别待机后唤醒应答被 30 s 发送超时卡住）、DashScope websocket 关闭握手 2 s 超时（网关不回应 close 帧，默认 10 s 让每次拜别待机白等满超时）、按模型家族区分的 DashScope 音色目录与跨家族音色回退、静默表情轮的语音补救（模型只回 play_emotion 不说话时补发 response.create，裸表情命令除外）、表演请求/台词情绪的本地表情触发、情绪对话主动表情、本地表情触发与表情工具去重、表情规则指令、ask_assistant / OpenClaw 对接、天线等待摆动、DashScope 摄像头图像注入、可选视觉模型的摄像头画面描述中继、视觉规则指令与会话温度配置、转头后注视保持与拍照落位等待、默认开场问候多风格随机挑选（会话无记忆，单一指令导致开场白趋同））
+> 最后核对：2026-09-09 · `master`（含待机期间丢弃迟到动作与工具结果回写的连接关闭降级、会话退出重置响应完成事件（修复拜别待机后唤醒应答被 30 s 发送超时卡住）、DashScope websocket 关闭握手 2 s 超时（网关不回应 close 帧，默认 10 s 让每次拜别待机白等满超时）、按模型家族区分的 DashScope 音色目录与跨家族音色回退、静默表情轮的语音补救（模型只回 play_emotion 不说话时补发 response.create，裸表情命令除外）、表演请求/台词情绪的本地表情触发、情绪对话主动表情、本地表情触发与表情工具去重、表情规则指令、ask_assistant / OpenClaw 对接、天线等待摆动、DashScope 摄像头图像注入、可选视觉模型的摄像头画面描述中继、视觉规则指令与会话温度配置、转头后注视保持与拍照落位等待、默认开场问候多风格随机挑选（会话无记忆，单一指令导致开场白趋同）、默认告别词新增「滚吧」）
 
 应用运行在 Reachy Mini SDK（`reachy_mini`）之上：语音进、语音出 + 机器人动作的实时对话应用，带 Web 管理界面、人格系统、长期记忆、可扩展的 LLM 工具体系（含远程 MCP Tool Spaces）。架构图见 `README.md`（源文件 `docs/scheme.mmd`）。
 
@@ -98,7 +98,7 @@
 
 进入 standby 的两个触发条件：
 
-1. **告别关键词**：最终用户转写中包含 `REACHY_MINI_GOODBYE_KEYWORDS` 之一（默认 `再见, 拜拜, goodbye, bye-bye, bye bye`），reason=`goodbye_keyword`。
+1. **告别关键词**：最终用户转写中包含 `REACHY_MINI_GOODBYE_KEYWORDS` 之一（默认 `再见, 拜拜, 滚吧, goodbye, bye-bye, bye bye`），reason=`goodbye_keyword`。
 2. **活动空闲超时**：`REACHY_MINI_WAKE_WORD_ACTIVE_TIMEOUT_S`（默认 300 秒，0 禁用）无对话活动，reason=`idle_timeout`。
 
 其他相关行为：
@@ -252,7 +252,7 @@
 | `REACHY_MINI_WAKE_WORD_MODELS` | 内置 `hi_reachy.onnx` | 逗号分隔：预训模型名或 `.onnx`/`.tflite` 路径 |
 | `REACHY_MINI_WAKE_WORD_THRESHOLD` | `0.5` | 检测阈值 0–1，越低越灵敏 |
 | `REACHY_MINI_WAKE_WORD_ACTIVE_TIMEOUT_S` | `300` | 活动空闲退出秒数，0 禁用（ask_assistant 等待期间自动挂起） |
-| `REACHY_MINI_GOODBYE_KEYWORDS` | `再见,拜拜,goodbye,bye-bye,bye bye` | 触发 standby 的告别词 |
+| `REACHY_MINI_GOODBYE_KEYWORDS` | `再见,拜拜,滚吧,goodbye,bye-bye,bye bye` | 触发 standby 的告别词 |
 | `REACHY_MINI_WAKE_WORD_DUMP_DIR` | — | 调试：转储待机麦克风音频为 wav |
 | `OPENCLAW_API_URL` | — | OpenClaw 网关的 OpenAI 兼容 completions 地址；未配置则隐藏 `ask_assistant` |
 | `OPENCLAW_API_TOKEN` | — | OpenClaw 网关 Bearer token |
