@@ -182,10 +182,22 @@ def test_session_greeting_prompt_loads_from_selected_profile(
 def test_session_greeting_prompt_uses_builtin_default_without_profile(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """The no-profile greeting should come from the built-in constant only."""
+    """The no-profile greeting should come from the built-in flavor set only."""
     monkeypatch.setattr(config, "REACHY_MINI_CUSTOM_PROFILE", None)
 
-    assert prompts_mod.get_session_greeting_prompt() == prompts_mod.DEFAULT_GREETING_PROMPT
+    assert prompts_mod.get_session_greeting_prompt() in prompts_mod.DEFAULT_GREETING_PROMPTS
+
+
+def test_default_greeting_prompt_varies_across_sessions(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Fresh, memoryless sessions should not always get the same default greeting."""
+    monkeypatch.setattr(config, "REACHY_MINI_CUSTOM_PROFILE", None)
+
+    # 40 draws over 5 flavors: the odds of an all-same run are around 1e-28.
+    greetings = {prompts_mod.get_session_greeting_prompt() for _ in range(40)}
+
+    assert len(greetings) > 1
 
 
 def test_headless_profile_write_can_store_greeting(

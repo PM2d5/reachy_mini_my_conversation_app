@@ -1,5 +1,6 @@
 """Resolve active profile prompts and voice settings."""
 
+import random
 import logging
 from pathlib import Path
 
@@ -16,9 +17,36 @@ from my_conversation_app.profile_store import (
 
 logger = logging.getLogger(__name__)
 
-DEFAULT_GREETING_PROMPT = (
-    "Start the conversation now with a brief, spontaneous greeting in character. "
-    "Keep it to one sentence, invite the user in naturally, and vary the wording each time."
+# Each app start opens a fresh session with no memory of previous greetings, so the
+# app varies the style itself; asking the model to "vary" cannot work across sessions.
+# Each entry is a style, not a literal line, so every greeting stays natural.
+DEFAULT_GREETING_PROMPTS = (
+    (
+        "Start the conversation now with a brief, spontaneous greeting in character — "
+        "warm and clearly glad to see the user, asking how they are doing. Keep it to "
+        "one sentence and invite the user in naturally, in the language you speak."
+    ),
+    (
+        "Start the conversation now with a brief, spontaneous greeting in character that "
+        "remarks on the moment — the time of day, the occasion, or simply that the user "
+        "has arrived. Keep it to one sentence and invite the user in naturally, in the "
+        "language you speak."
+    ),
+    (
+        "Start the conversation now with a brief, spontaneous greeting in character — "
+        "curious and full of energy, inviting the user to say what they feel like doing "
+        "or talking about. Keep it to one sentence, in the language you speak."
+    ),
+    (
+        "Start the conversation now with a brief, spontaneous greeting drawn from your "
+        "character's own world — one playful line only you would say, that pulls the "
+        "user in. Keep it to one sentence, in the language you speak."
+    ),
+    (
+        "Start the conversation now with a brief, spontaneous greeting in character — "
+        "light and humorous, one witty or self-aware line that makes the user smile. "
+        "Keep it to one sentence and invite the user in naturally, in the language you speak."
+    ),
 )
 
 # Each wake opens a fresh session with no memory of previous acknowledgements, so the
@@ -186,9 +214,12 @@ def get_session_voice(default: str | None = None) -> str:
 
 
 def get_session_greeting_prompt() -> str:
-    """Return the active profile greeting prompt or the app default."""
+    """Return the active profile greeting prompt or a random default flavor."""
     try:
-        return _active_profile().greeting or DEFAULT_GREETING_PROMPT
+        greeting = _active_profile().greeting
     except (FileNotFoundError, ProfileFormatError) as exc:
         logger.warning("Failed to load the active profile greeting: %s", exc)
-        return DEFAULT_GREETING_PROMPT
+        greeting = None
+    # Random, not a rotating index: the greeting fires once per launch, so an
+    # in-memory counter would pin every fresh start to the same flavor.
+    return greeting or random.choice(DEFAULT_GREETING_PROMPTS)
