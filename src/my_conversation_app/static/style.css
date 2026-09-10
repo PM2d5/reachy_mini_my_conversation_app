@@ -330,8 +330,7 @@ button {
   height: 18px;
 }
 
-.app-shell__tools,
-.app-shell__faces {
+.app-shell__tools {
   width: auto;
   gap: 7px;
   padding: 0 12px;
