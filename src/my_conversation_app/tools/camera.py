@@ -3,6 +3,7 @@ import asyncio
 import logging
 from typing import Any, Dict
 
+from my_conversation_app.config import config
 from my_conversation_app.tools.core_tools import Tool, ToolDependencies
 
 
@@ -70,4 +71,31 @@ class Camera(Tool):
             logger.error("No frame available from camera")
             return {"error": "No frame available"}
 
-        return {"b64_im": base64.b64encode(jpeg_bytes).decode("utf-8"), "question": question}
+        result: Dict[str, Any] = {"b64_im": base64.b64encode(jpeg_bytes).decode("utf-8"), "question": question}
+        # Piggyback recognition on this shot: it updates last-seen and tells the
+        # model who is in frame — same capture moment, no extra framing delay.
+        face_note = await self._recognize_visible_face(deps)
+        if face_note is not None:
+            result["face"] = face_note
+        return result
+
+    async def _recognize_visible_face(self, deps: ToolDependencies) -> Dict[str, Any] | None:
+        """Recognize the dominant face of a fresh frame; None when unavailable."""
+        recognizer = deps.face_recognizer
+        if recognizer is None or not config.FACE_RECOGNITION_ENABLED or not recognizer.available:
+            return None
+        try:
+            frame = await asyncio.to_thread(deps.reachy_mini.media.get_frame)
+            if frame is None:
+                return None
+            outcome = await asyncio.to_thread(recognizer.recognize, frame)
+        except Exception as exc:
+            logger.warning("Face recognition on camera frame failed: %s", exc)
+            return None
+        if not outcome.face_detected:
+            return None
+        if outcome.face_id is None:
+            return {"name": None, "relation": "unknown"}
+        identity = deps.current_identity
+        relation = "user" if identity is not None and identity.face_id == outcome.face_id else "other"
+        return {"name": outcome.name, "relation": relation}

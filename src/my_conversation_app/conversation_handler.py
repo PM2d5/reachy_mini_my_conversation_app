@@ -3,7 +3,7 @@ import time
 import asyncio
 import logging
 from abc import ABC, abstractmethod
-from typing import ClassVar, TypeAlias
+from typing import TYPE_CHECKING, ClassVar, TypeAlias
 from collections.abc import Callable
 
 import numpy as np
@@ -13,6 +13,10 @@ from my_conversation_app.streaming import AdditionalOutputs, AsyncStreamHandler,
 from my_conversation_app.idle_policy import start_idle_tool_call
 from my_conversation_app.tools.core_tools import ToolDependencies, get_tool_specs
 from my_conversation_app.tools.background_tool_manager import BackgroundToolManager
+
+
+if TYPE_CHECKING:
+    from my_conversation_app.face_recognition import SessionIdentity
 
 
 logger = logging.getLogger(__name__)
@@ -35,6 +39,7 @@ class ConversationHandler(AsyncStreamHandler, ABC):
     last_idle_behavior_time: float
     _activity_observer: Callable[[str], None] | None = None
     _transcript_observer: Callable[[str, str, bool], None] | None = None
+    _identity_observer: Callable[["SessionIdentity | None"], None] | None = None
 
     def __init__(self) -> None:
         """Initialize the stream handler and shared idle/activity tracking."""
@@ -49,6 +54,18 @@ class ConversationHandler(AsyncStreamHandler, ABC):
     def set_transcript_observer(self, observer: Callable[[str, str, bool], None] | None) -> None:
         """Attach/detach a transcript observer, called (role, text, final)."""
         self._transcript_observer = observer
+
+    def set_identity_observer(self, observer: Callable[["SessionIdentity | None"], None] | None) -> None:
+        """Attach/detach an identity observer, called when session identity resolves."""
+        self._identity_observer = observer
+
+    def _emit_identity(self, identity: "SessionIdentity | None") -> None:
+        """Forward the resolved session identity to the observer, if attached."""
+        if self._identity_observer is not None:
+            try:
+                self._identity_observer(identity)
+            except Exception:
+                logger.debug("identity observer raised (ignored)", exc_info=True)
 
     def _emit_transcript(self, role: str, text: str, final: bool = True) -> None:
         """Forward one transcript chunk to the observer, if attached."""

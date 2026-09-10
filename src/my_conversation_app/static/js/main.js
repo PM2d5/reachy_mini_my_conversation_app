@@ -12,6 +12,7 @@ import { mountHomeView } from "./views/home.js";
 import { mountTalkView } from "./views/talk.js";
 import { mountSettingsView } from "./views/settings.js";
 import { mountToolsView } from "./views/tools.js";
+import { mountFacesView } from "./views/faces.js";
 
 const SETTINGS_RETURN_KEY = "settings-return-route";
 
@@ -58,6 +59,7 @@ function boot() {
       [ROUTES.PERSONALITIES]: (ctx) => mountHomeView({ ...ctx, navigate: router.navigate }),
       [ROUTES.SETTINGS]: (ctx) => mountSettingsView(ctx),
       [ROUTES.TOOLS]: (ctx) => mountToolsView(ctx),
+      [ROUTES.FACES]: (ctx) => mountFacesView(ctx),
     },
     { fallback: ROUTES.TALK, outlet, onRouteChange: syncHeaderForRoute }
   );
@@ -69,6 +71,13 @@ function boot() {
     tools.addEventListener("click", (event) => {
       event.preventDefault();
       router.navigate(ROUTES.TOOLS);
+    });
+  }
+  const faces = $('[data-action="open-faces"]');
+  if (faces) {
+    faces.addEventListener("click", (event) => {
+      event.preventDefault();
+      router.navigate(ROUTES.FACES);
     });
   }
   const gear = $('[data-action="open-settings"]');
@@ -125,6 +134,12 @@ function boot() {
       tools.classList.toggle("is-active", onTools);
       if (onTools) tools.setAttribute("aria-current", "page");
       else tools.removeAttribute("aria-current");
+    }
+    if (faces) {
+      const onFaces = routeName === ROUTES.FACES;
+      faces.classList.toggle("is-active", onFaces);
+      if (onFaces) faces.setAttribute("aria-current", "page");
+      else faces.removeAttribute("aria-current");
     }
     if (gear) {
       const onSettings = routeName === ROUTES.SETTINGS;

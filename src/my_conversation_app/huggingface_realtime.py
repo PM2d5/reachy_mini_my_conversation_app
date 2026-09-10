@@ -42,12 +42,14 @@ from my_conversation_app.prompts import (
     WAKE_ACKNOWLEDGEMENT_PROMPTS,
     ASSISTANT_RESULT_RELAY_PROMPT,
     ASSISTANT_WAIT_ACKNOWLEDGEMENT_PROMPTS,
+    KNOWN_USER_WAKE_ACKNOWLEDGEMENT_PROMPTS,
     get_session_voice,
     get_session_instructions,
     get_session_greeting_prompt,
 )
 from my_conversation_app.streaming import AdditionalOutputs, audio_to_int16
 from my_conversation_app.vision_relay import describe_camera_frame
+from my_conversation_app.face_recognition import SessionIdentity
 from my_conversation_app.tools.core_tools import (
     ToolSpec,
     ToolDependencies,
@@ -58,6 +60,7 @@ from my_conversation_app.tools.play_emotion import (
     match_expression_command,
     is_direct_expression_command,
 )
+from my_conversation_app.tools.remember_face import match_face_enrollment_command
 from my_conversation_app.conversation_handler import ConversationHandler
 from my_conversation_app.tools.background_tool_manager import (
     ToolCallRoutine,
@@ -74,6 +77,10 @@ logger = logging.getLogger(__name__)
 
 _RESPONSE_DONE_TIMEOUT: Final[float] = 30.0
 _RESPONSE_REJECTION_RETRY_DELAY: Final[float] = 0.5
+_IDENTITY_SETTLE_POLL_S: Final[float] = 0.05
+# Recognition runs while the connection and head-lift animate; past this the
+# session builds as a guest rather than stalling the wake acknowledgement.
+_IDENTITY_RESOLVE_TIMEOUT_S: Final[float] = 3.0
 
 
 class InputTranscriptChunksByItem(BaseModel):
@@ -177,7 +184,9 @@ class HuggingFaceRealtimeHandler(ConversationHandler):
         self._wake_ack_pending = False
         # Random start so the first wake after every boot does not always land on the same flavor.
         self._wake_ack_index = random.randrange(len(WAKE_ACKNOWLEDGEMENT_PROMPTS))
+        self._known_user_wake_ack_index = random.randrange(len(KNOWN_USER_WAKE_ACKNOWLEDGEMENT_PROMPTS))
         self._wait_ack_index = random.randrange(len(ASSISTANT_WAIT_ACKNOWLEDGEMENT_PROMPTS))
+        self._identity_task: asyncio.Task[None] | None = None
         self._in_flight_tool_calls: set[str] = set()
         self._tool_batch_needs_response = False
         # Call ids of tools that must be waited out in silence (ask_assistant):
@@ -261,7 +270,7 @@ class HuggingFaceRealtimeHandler(ConversationHandler):
         """Return the Hugging Face OpenAI-compatible session config."""
         return RealtimeSessionCreateRequestParam(
             type="realtime",
-            instructions=get_session_instructions(self.instance_path),
+            instructions=get_session_instructions(self.instance_path, identity=self.deps.current_identity),
             audio=RealtimeAudioConfigParam(
                 input=RealtimeAudioConfigInputParam(
                     # The OpenAI SDK type only includes 24 kHz PCM, but the HF
@@ -334,7 +343,7 @@ class HuggingFaceRealtimeHandler(ConversationHandler):
         previous_profile = config.REACHY_MINI_CUSTOM_PROFILE
         set_custom_profile(profile)
         try:
-            instructions = get_session_instructions(self.instance_path)
+            instructions = get_session_instructions(self.instance_path, identity=self.deps.current_identity)
             voice = self.get_current_voice()
             core_tools.initialize_tools(force=True)
         except Exception as exc:
@@ -397,6 +406,9 @@ class HuggingFaceRealtimeHandler(ConversationHandler):
 
     async def start_up(self) -> None:
         """Start the handler with minimal retries on unexpected websocket closure."""
+        # Recognize the facing person while the connection is still being built,
+        # so the session instructions can name them without extra latency.
+        self.begin_identity_resolution()
         self.client = await self._build_realtime_client()
 
         max_attempts = 3
@@ -447,6 +459,60 @@ class HuggingFaceRealtimeHandler(ConversationHandler):
         """
         self._startup_greeting_sent = False
         self._wake_ack_pending = True
+        # Kick recognition off at the wake moment itself: the head lift and the
+        # websocket reconnect then hide its latency entirely.
+        self.begin_identity_resolution()
+
+    def begin_identity_resolution(self) -> None:
+        """Start recognizing the facing person for the next session build (idempotent)."""
+        if self._identity_task is not None and not self._identity_task.done():
+            return
+        self._identity_task = asyncio.create_task(self._resolve_session_identity(), name="session-identity")
+
+    async def _resolve_session_identity(self) -> None:
+        """Recognize the facing person; any failure leaves the session unidentified."""
+        recognizer = self.deps.face_recognizer
+        self.deps.current_identity = None
+        if recognizer is None or not config.FACE_RECOGNITION_ENABLED:
+            # Still notify so a stale name from the previous session clears.
+            self._emit_identity(None)
+            return
+        try:
+            if not await asyncio.to_thread(recognizer.load_models):
+                return
+            # The head may still be lifting out of standby; wait for it to settle
+            # so the camera frames a face instead of the floor.
+            await asyncio.sleep(_IDENTITY_SETTLE_POLL_S)
+            while self.deps.movement_manager.is_moving():
+                await asyncio.sleep(_IDENTITY_SETTLE_POLL_S)
+            frame = await asyncio.to_thread(self.deps.reachy_mini.media.get_frame)
+            if frame is None:
+                logger.warning("Session identity: no camera frame available")
+                return
+            outcome = await asyncio.to_thread(recognizer.recognize, frame)
+            if outcome.name is not None and outcome.face_id is not None:
+                self.deps.current_identity = SessionIdentity(name=outcome.name, face_id=outcome.face_id)
+                logger.info("Session identity: %s (similarity %.3f)", outcome.name, outcome.similarity)
+            else:
+                logger.info("Session identity: no enrolled match (best similarity %.3f)", outcome.similarity)
+        except Exception as exc:
+            logger.warning("Session identity resolution failed: %s", exc)
+        finally:
+            self._emit_identity(self.deps.current_identity)
+
+    async def _await_session_identity(self) -> None:
+        """Wait out the session-start recognition so instructions can name the user."""
+        task = self._identity_task
+        # A previous wait_for timeout cancelled the task; awaiting it again would
+        # raise CancelledError, which "except Exception" cannot catch.
+        if task is None or task.cancelled():
+            return
+        try:
+            await asyncio.wait_for(task, timeout=_IDENTITY_RESOLVE_TIMEOUT_S)
+        except asyncio.TimeoutError:
+            logger.warning("Session identity resolution timed out; continuing unidentified")
+        except Exception as exc:
+            logger.warning("Session identity resolution failed: %s", exc)
 
     async def _restart_session(self) -> None:
         """Force-close the current session and start a fresh one in background.
@@ -516,8 +582,18 @@ class HuggingFaceRealtimeHandler(ConversationHandler):
         if self._startup_greeting_sent or not self.connection:
             return
 
+        used_known_user_ack = False
         if self._wake_ack_pending:
-            greeting_prompt = WAKE_ACKNOWLEDGEMENT_PROMPTS[self._wake_ack_index % len(WAKE_ACKNOWLEDGEMENT_PROMPTS)]
+            identity = self.deps.current_identity
+            if identity is not None:
+                used_known_user_ack = True
+                greeting_prompt = KNOWN_USER_WAKE_ACKNOWLEDGEMENT_PROMPTS[
+                    self._known_user_wake_ack_index % len(KNOWN_USER_WAKE_ACKNOWLEDGEMENT_PROMPTS)
+                ].format(name=identity.name, clock=datetime.now().strftime("%H:%M"))
+            else:
+                greeting_prompt = WAKE_ACKNOWLEDGEMENT_PROMPTS[
+                    self._wake_ack_index % len(WAKE_ACKNOWLEDGEMENT_PROMPTS)
+                ]
         else:
             greeting_prompt = get_session_greeting_prompt().strip()
         if not greeting_prompt:
@@ -539,7 +615,10 @@ class HuggingFaceRealtimeHandler(ConversationHandler):
             )
             self._startup_greeting_sent = True
             self._wake_ack_pending = False
-            self._wake_ack_index += 1
+            if used_known_user_ack:
+                self._known_user_wake_ack_index += 1
+            else:
+                self._wake_ack_index += 1
             self._mark_activity("startup_greeting_prompt")
             await self._safe_response_create()
             logger.info("Queued startup greeting prompt")
@@ -701,7 +780,10 @@ class HuggingFaceRealtimeHandler(ConversationHandler):
                 question if isinstance(question, str) else "",
                 tool_result["b64_im"],
             )
-            tool_result_for_model = caption
+            # The caption replaces the whole result, so carry the face note over
+            # — relay mode must not lose who was recognized in the frame.
+            face_note = tool_result.get("face")
+            tool_result_for_model = {**caption, "face": face_note} if isinstance(face_note, dict) else caption
             camera_frame_relayed = True
 
         # Connection may have closed while tool was running
@@ -881,6 +963,38 @@ class HuggingFaceRealtimeHandler(ConversationHandler):
             return
         await self._play_emotion_locally(intent, "Expression command matched locally")
 
+    async def _maybe_enroll_face_locally(self, transcript: str) -> None:
+        """Enroll the speaker when they introduce themselves and ask to be remembered.
+
+        Same belt-and-brances as the expression trigger: 记住我 is a fixed phrase a
+        regex never misses, while realtime models under-call identity tools. Runs
+        as an idle tool call, so the model just speaks its own confirmation.
+        """
+        name = match_face_enrollment_command(transcript)
+        if name is None:
+            return
+        if "remember_face" not in core_tools.get_tools():
+            return
+        call_id = f"face-enroll-{uuid.uuid4()}"
+        background_tool = await self.tool_manager.start_tool(
+            call_id=call_id,
+            tool_call_routine=ToolCallRoutine(
+                tool_name="remember_face",
+                args_json_str=json.dumps({"name": name}),
+                deps=self.deps,
+            ),
+            is_idle_tool_call=True,
+        )
+        await self.output_queue.put(
+            AdditionalOutputs(
+                {
+                    "role": "assistant",
+                    "content": (f"🙂 记住我: {name} (id={background_tool.tool_id})"),
+                },
+            ),
+        )
+        logger.info("Local face-enrollment trigger: name=%s", name)
+
     async def _watch_spoken_emotion(self, spoken_text: str) -> None:
         """Emote when the model's own spoken words name an emotion.
 
@@ -908,6 +1022,9 @@ class HuggingFaceRealtimeHandler(ConversationHandler):
             connect_kwargs["extra_query"] = self._realtime_connect_query
         async with self.client.realtime.connect(**connect_kwargs) as conn:
             try:
+                # The recognition task was kicked off at wake/startup and overlapped
+                # the connect; instructions need the identity it resolved.
+                await self._await_session_identity()
                 session_config = self._get_session_config(tool_specs)
                 await conn.session.update(session=session_config)
                 logger.info(
@@ -1036,6 +1153,7 @@ class HuggingFaceRealtimeHandler(ConversationHandler):
                         await self.output_queue.put(AdditionalOutputs({"role": "user", "content": transcript}))
                         self._emit_transcript("user", transcript, True)
                         await self._maybe_play_expression_command(transcript)
+                        await self._maybe_enroll_face_locally(transcript)
 
                     # Handle assistant transcription
                     if event.type == "response.output_audio_transcript.delta":
@@ -1215,6 +1333,10 @@ class HuggingFaceRealtimeHandler(ConversationHandler):
 
     async def shutdown(self) -> None:
         """Shutdown the handler."""
+        # Never let a late identity resolution outlive the session it was for.
+        if self._identity_task is not None and not self._identity_task.done():
+            self._identity_task.cancel()
+
         # Unblock the response sender worker so it can exit
         self._response_done_event.set()
 

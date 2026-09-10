@@ -3,10 +3,24 @@
 import base64
 from unittest.mock import MagicMock
 
+import numpy as np
 import pytest
 
+from my_conversation_app.config import config
 from my_conversation_app.tools.camera import Camera
+from my_conversation_app.face_recognition import SessionIdentity, RecognitionOutcome
 from my_conversation_app.tools.core_tools import ToolDependencies
+
+
+class _FakeRecognizer:
+    """Stands in for FaceRecognitionService with a canned outcome."""
+
+    def __init__(self, outcome: RecognitionOutcome) -> None:
+        self.available = True
+        self._outcome = outcome
+
+    def recognize(self, frame: np.ndarray) -> RecognitionOutcome:
+        return self._outcome
 
 
 def _deps(reachy_mini: MagicMock) -> ToolDependencies:
@@ -71,3 +85,60 @@ async def test_camera_tool_waits_for_head_motion_to_settle() -> None:
     assert "b64_im" in result
     # The frame is only read once the motion settled, never during it.
     assert call_order == ["poll", "poll", "poll", "capture"]
+
+
+@pytest.mark.asyncio
+async def test_camera_tool_appends_face_note_for_session_user() -> None:
+    """The piggyback recognition labels the recognized session user."""
+    reachy_mini = MagicMock()
+    reachy_mini.media.get_frame_jpeg.return_value = b"\xff\xd8jpeg\xff\xd9"
+    reachy_mini.media.get_frame.return_value = np.zeros((240, 320, 3), dtype=np.uint8)
+    deps = _deps(reachy_mini)
+    deps.face_recognizer = _FakeRecognizer(RecognitionOutcome("凯蕾", "f_1", 0.9, True))
+    deps.current_identity = SessionIdentity(name="凯蕾", face_id="f_1")
+
+    result = await Camera()(deps, question="How do I look?")
+
+    assert result["face"] == {"name": "凯蕾", "relation": "user"}
+
+
+@pytest.mark.asyncio
+async def test_camera_tool_marks_other_enrolled_and_unknown_faces() -> None:
+    """A different enrolled person is "other"; an unmatched face is "unknown"."""
+    reachy_mini = MagicMock()
+    reachy_mini.media.get_frame_jpeg.return_value = b"\xff\xd8jpeg\xff\xd9"
+    reachy_mini.media.get_frame.return_value = np.zeros((240, 320, 3), dtype=np.uint8)
+    deps = _deps(reachy_mini)
+    deps.current_identity = SessionIdentity(name="凯蕾", face_id="f_1")
+
+    deps.face_recognizer = _FakeRecognizer(RecognitionOutcome("李雷", "f_2", 0.9, True))
+    other = await Camera()(deps, question="Who is here?")
+    assert other["face"] == {"name": "李雷", "relation": "other"}
+
+    deps.face_recognizer = _FakeRecognizer(RecognitionOutcome(None, None, 0.2, True))
+    unknown = await Camera()(deps, question="Who is here?")
+    assert unknown["face"] == {"name": None, "relation": "unknown"}
+
+
+@pytest.mark.asyncio
+async def test_camera_tool_omits_face_note_when_unavailable(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """No recognizer, no detected face, or a disabled flag all omit the note."""
+    reachy_mini = MagicMock()
+    reachy_mini.media.get_frame_jpeg.return_value = b"\xff\xd8jpeg\xff\xd9"
+    reachy_mini.media.get_frame.return_value = np.zeros((240, 320, 3), dtype=np.uint8)
+
+    without_recognizer = await Camera()(_deps(reachy_mini), question="What do you see?")
+    assert "face" not in without_recognizer
+
+    no_face_deps = _deps(reachy_mini)
+    no_face_deps.face_recognizer = _FakeRecognizer(RecognitionOutcome(None, None, 0.0, False))
+    without_face = await Camera()(no_face_deps, question="What do you see?")
+    assert "face" not in without_face
+
+    monkeypatch.setattr(config, "FACE_RECOGNITION_ENABLED", False)
+    disabled_deps = _deps(reachy_mini)
+    disabled_deps.face_recognizer = _FakeRecognizer(RecognitionOutcome("凯蕾", "f_1", 0.9, True))
+    disabled = await Camera()(disabled_deps, question="What do you see?")
+    assert "face" not in disabled

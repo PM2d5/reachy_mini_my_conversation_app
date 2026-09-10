@@ -1,3 +1,5 @@
+import re
+import json
 import time
 import asyncio
 from typing import Any
@@ -9,6 +11,7 @@ import pytest
 import my_conversation_app.conversation_handler as conv_mod
 import my_conversation_app.huggingface_realtime as hf_mod
 from my_conversation_app.config import config, get_default_voice
+from my_conversation_app.face_recognition import SessionIdentity
 from my_conversation_app.tools.core_tools import ToolDependencies
 from my_conversation_app.tools.play_emotion import PlayEmotion
 from my_conversation_app.huggingface_realtime import HuggingFaceRealtimeHandler
@@ -144,7 +147,7 @@ def _fake_allocator(
 @pytest.mark.asyncio
 async def test_partial_transcription_uses_latest_snapshot(monkeypatch: Any) -> None:
     """Partial transcription snapshots should replace older snapshots for the same item."""
-    monkeypatch.setattr(hf_mod, "get_session_instructions", lambda _instance_path=None: "test")
+    monkeypatch.setattr(hf_mod, "get_session_instructions", lambda _instance_path=None, identity=None: "test")
     monkeypatch.setattr(hf_mod, "get_session_voice", lambda default=HF_DEFAULT_VOICE: "Aiden")
     monkeypatch.setattr(hf_mod, "get_tool_specs", lambda: [])
 
@@ -219,6 +222,115 @@ async def test_consecutive_wakes_rotate_the_acknowledgement_flavor(monkeypatch: 
 
 
 @pytest.mark.asyncio
+async def test_known_user_wake_is_acknowledged_by_name(monkeypatch: Any) -> None:
+    """A wake with a recognized identity greets by name via the dedicated pool."""
+    monkeypatch.setattr(hf_mod, "get_session_greeting_prompt", lambda: "full session greeting")
+
+    deps = ToolDependencies(reachy_mini=MagicMock(), movement_manager=MagicMock())
+    handler = HuggingFaceRealtimeHandler(deps)
+    handler._wake_ack_pending = True
+    handler._wake_ack_index = 0
+    handler._known_user_wake_ack_index = 0
+    deps.current_identity = SessionIdentity(name="凯蕾", face_id="f_1")
+    handler.connection = AsyncMock()
+
+    await handler._send_startup_greeting_prompt()
+
+    ack = _injected_greeting_text(handler)
+    assert ack == hf_mod.KNOWN_USER_WAKE_ACKNOWLEDGEMENT_PROMPTS[0].format(name="凯蕾")
+    assert handler._known_user_wake_ack_index == 1
+    assert handler._wake_ack_index == 0
+
+
+@pytest.mark.asyncio
+async def test_time_of_day_wake_ack_carries_the_real_clock(monkeypatch: Any) -> None:
+    """The time-of-day flavor must be fed the actual local time, not let the model guess."""
+    monkeypatch.setattr(hf_mod, "get_session_greeting_prompt", lambda: "full session greeting")
+
+    deps = ToolDependencies(reachy_mini=MagicMock(), movement_manager=MagicMock())
+    handler = HuggingFaceRealtimeHandler(deps)
+    handler._wake_ack_pending = True
+    handler._known_user_wake_ack_index = 1  # the time-of-day flavor
+    deps.current_identity = SessionIdentity(name="凯蕾", face_id="f_1")
+    handler.connection = AsyncMock()
+
+    await handler._send_startup_greeting_prompt()
+
+    ack = _injected_greeting_text(handler)
+    assert "local time" in ack
+    assert re.search(r"\b\d{2}:\d{2}\b", ack) is not None
+
+
+@pytest.mark.asyncio
+async def test_enrollment_phrase_triggers_local_idle_tool_call(monkeypatch: Any) -> None:
+    """「我叫X，记住我」enrolls locally as an idle call, bypassing the model."""
+    deps = ToolDependencies(reachy_mini=MagicMock(), movement_manager=MagicMock())
+    handler = HuggingFaceRealtimeHandler(deps)
+    start_tool = AsyncMock()
+    # The manager is a pydantic model, so instance setattr is refused — patch the type.
+    monkeypatch.setattr(type(handler.tool_manager), "start_tool", start_tool)
+    monkeypatch.setattr(hf_mod.core_tools, "get_tools", lambda: {"remember_face": MagicMock()})
+
+    await handler._maybe_enroll_face_locally("我叫凯蕾，记住我")
+    await handler._maybe_enroll_face_locally("记住我喜欢喝咖啡")
+
+    assert start_tool.await_count == 1
+    kwargs = start_tool.await_args.kwargs
+    assert kwargs["is_idle_tool_call"] is True
+    routine = kwargs["tool_call_routine"]
+    assert routine.tool_name == "remember_face"
+    assert json.loads(routine.args_json_str) == {"name": "凯蕾"}
+
+
+@pytest.mark.asyncio
+async def test_await_session_identity_skips_cancelled_task() -> None:
+    """A task cancelled by a previous wait_for timeout must not abort a retry."""
+    handler = HuggingFaceRealtimeHandler(ToolDependencies(reachy_mini=MagicMock(), movement_manager=MagicMock()))
+    cancelled_task = asyncio.get_running_loop().create_task(asyncio.sleep(30))
+    cancelled_task.cancel()
+    try:
+        await cancelled_task
+    except asyncio.CancelledError:
+        pass
+    handler._identity_task = cancelled_task
+
+    # Awaiting the cancelled task again would raise CancelledError; must not raise.
+    await handler._await_session_identity()
+
+
+@pytest.mark.asyncio
+async def test_camera_result_keeps_face_note_through_vision_relay(monkeypatch: Any) -> None:
+    """Relay mode replaces the camera result with a caption but keeps the face note."""
+    monkeypatch.setattr(hf_mod, "get_session_instructions", lambda _instance_path=None, identity=None: "test")
+    handler = HuggingFaceRealtimeHandler(ToolDependencies(reachy_mini=MagicMock(), movement_manager=MagicMock()))
+    monkeypatch.setattr(handler, "_camera_frame_needs_captioning", lambda: True)
+    monkeypatch.setattr(hf_mod, "describe_camera_frame", AsyncMock(return_value={"text": "a person waving"}))
+    handler.connection = AsyncMock()
+    handler.output_queue = asyncio.Queue()
+    monkeypatch.setattr(handler, "_wait_for_response_done_before_tool_result", AsyncMock(return_value=True))
+
+    await handler._handle_tool_result(
+        ToolNotification(
+            id="call_camera",
+            tool_name="camera",
+            is_idle_tool_call=False,
+            status=ToolState.COMPLETED,
+            result={
+                "b64_im": "aGVsbG8=",
+                "question": "who is here?",
+                "face": {"name": "凯蕾", "relation": "user"},
+            },
+        )
+    )
+
+    item = handler.connection.conversation.item.create.call_args.kwargs["item"]
+    assert item["type"] == "function_call_output"
+    payload = json.loads(item["output"])
+    assert payload["text"] == "a person waving"
+    assert payload["face"] == {"name": "凯蕾", "relation": "user"}
+
+
+@pytest.mark.asyncio
 async def test_emit_skips_idle_signal_while_response_active(monkeypatch: Any) -> None:
     """Idle tools should not trigger while a response is still active."""
     movement_manager = MagicMock()
@@ -241,7 +353,7 @@ async def test_emit_skips_idle_signal_while_response_active(monkeypatch: Any) ->
 @pytest.mark.asyncio
 async def test_parallel_tool_calls_trigger_single_response(monkeypatch: Any) -> None:
     """Parallel tool calls in one turn should yield one response, not one per completed tool."""
-    monkeypatch.setattr(hf_mod, "get_session_instructions", lambda _instance_path=None: "test")
+    monkeypatch.setattr(hf_mod, "get_session_instructions", lambda _instance_path=None, identity=None: "test")
     monkeypatch.setattr(hf_mod, "get_session_voice", lambda default=HF_DEFAULT_VOICE: "Aiden")
     monkeypatch.setattr(hf_mod, "get_tool_specs", lambda: [])
 
@@ -283,7 +395,7 @@ async def test_silent_play_emotion_reply_policy(
     monkeypatch: Any, user_transcript: str, audio_already_streamed: bool, expect_reply: bool
 ) -> None:
     """A mute play_emotion-only response must be followed by speech unless the ask was a bare expression."""
-    monkeypatch.setattr(hf_mod, "get_session_instructions", lambda _instance_path=None: "test")
+    monkeypatch.setattr(hf_mod, "get_session_instructions", lambda _instance_path=None, identity=None: "test")
     monkeypatch.setattr(hf_mod, "get_session_voice", lambda default=HF_DEFAULT_VOICE: "Aiden")
     monkeypatch.setattr(hf_mod.core_tools, "get_tools", lambda: {"play_emotion": PlayEmotion()})
 
@@ -342,7 +454,7 @@ def test_handler_normalizes_hf_voice_case(monkeypatch: Any) -> None:
 @pytest.mark.asyncio
 async def test_run_realtime_session_uses_default_voice_for_lb_allocated_sessions(monkeypatch: Any) -> None:
     """Use the backend default speaker when no profile voice is selected for the hf LB."""
-    monkeypatch.setattr(hf_mod, "get_session_instructions", lambda _instance_path=None: "test")
+    monkeypatch.setattr(hf_mod, "get_session_instructions", lambda _instance_path=None, identity=None: "test")
     monkeypatch.setattr(hf_mod, "get_session_voice", lambda default=HF_DEFAULT_VOICE: default)
     monkeypatch.setattr(hf_mod, "get_tool_specs", lambda: [])
     monkeypatch.setattr(config, "HF_REALTIME_SESSION_URL", "https://lb.example.test/session")
@@ -374,7 +486,7 @@ def test_huggingface_session_uses_configured_transcription_language(monkeypatch:
 @pytest.mark.asyncio
 async def test_run_realtime_session_passes_allocated_session_query(monkeypatch: Any) -> None:
     """Hugging Face sessions must forward the allocated session token to the websocket connect call."""
-    monkeypatch.setattr(hf_mod, "get_session_instructions", lambda _instance_path=None: "test")
+    monkeypatch.setattr(hf_mod, "get_session_instructions", lambda _instance_path=None, identity=None: "test")
     monkeypatch.setattr(hf_mod, "get_session_voice", lambda default=HF_DEFAULT_VOICE: default)
     monkeypatch.setattr(hf_mod, "get_tool_specs", lambda: [])
 
@@ -519,7 +631,9 @@ async def test_build_realtime_client_deployed_resolves_hf_token(
 @pytest.mark.asyncio
 async def test_apply_personality_uses_selected_voice_for_lb_allocated_sessions(monkeypatch: Any) -> None:
     """Live personality updates should honor the selected Qwen CustomVoice speaker."""
-    monkeypatch.setattr(hf_mod, "get_session_instructions", lambda _instance_path=None: "new instructions")
+    monkeypatch.setattr(
+        hf_mod, "get_session_instructions", lambda _instance_path=None, identity=None: "new instructions"
+    )
     monkeypatch.setattr(hf_mod, "get_session_voice", lambda default=HF_DEFAULT_VOICE: "Serena")
     monkeypatch.setattr(config, "HF_REALTIME_SESSION_URL", "https://lb.example.test/session")
 
@@ -558,7 +672,9 @@ async def test_apply_personality_restores_profile_when_tools_fail(monkeypatch: A
 
     monkeypatch.setattr(config, "REACHY_MINI_CUSTOM_PROFILE", "default")
     monkeypatch.setattr(hf_mod, "set_custom_profile", select_profile)
-    monkeypatch.setattr(hf_mod, "get_session_instructions", lambda _instance_path=None: "new instructions")
+    monkeypatch.setattr(
+        hf_mod, "get_session_instructions", lambda _instance_path=None, identity=None: "new instructions"
+    )
     monkeypatch.setattr(hf_mod.core_tools, "initialize_tools", fail_tool_reload)
     handler = HuggingFaceRealtimeHandler(ToolDependencies(reachy_mini=MagicMock(), movement_manager=MagicMock()))
 
@@ -739,7 +855,7 @@ async def test_tool_result_writeback_swallows_ok_close(monkeypatch: Any) -> None
     """A session paused (goodbye standby) just as a tool finishes must not leak a task exception."""
     from websockets.exceptions import ConnectionClosedOK
 
-    monkeypatch.setattr(hf_mod, "get_session_instructions", lambda _instance_path=None: "test")
+    monkeypatch.setattr(hf_mod, "get_session_instructions", lambda _instance_path=None, identity=None: "test")
     monkeypatch.setattr(hf_mod, "get_session_voice", lambda default=HF_DEFAULT_VOICE: "Aiden")
     handler = HuggingFaceRealtimeHandler(ToolDependencies(reachy_mini=MagicMock(), movement_manager=MagicMock()))
     handler.connection = AsyncMock()
@@ -770,7 +886,7 @@ async def test_session_exit_resets_response_done_event(monkeypatch: Any) -> None
     session exit, the next wake acknowledgement's response.create blocks for
     _RESPONSE_DONE_TIMEOUT (30 s) before force-sending.
     """
-    monkeypatch.setattr(hf_mod, "get_session_instructions", lambda _instance_path=None: "test")
+    monkeypatch.setattr(hf_mod, "get_session_instructions", lambda _instance_path=None, identity=None: "test")
     monkeypatch.setattr(hf_mod, "get_session_voice", lambda default=HF_DEFAULT_VOICE: "Aiden")
     monkeypatch.setattr(hf_mod, "get_tool_specs", lambda: [])
 

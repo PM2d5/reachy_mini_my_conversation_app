@@ -786,17 +786,28 @@ button {
   min-height: 1.4em;
 }
 
+.talk__identity {
+  margin: 6px 0 0;
+  min-height: 1.2em;
+  color: var(--text-soft);
+  font-size: 0.85rem;
+  opacity: 0.85;
+  text-align: center;
+}
+
 /* 6. Settings and tools views */
 
 .view--settings,
-.view--tools {
+.view--tools,
+.view--faces {
   display: flex;
   flex-direction: column;
   gap: 24px;
 }
 
 .view--settings > .view-header,
-.view--tools > .view-header {
+.view--tools > .view-header,
+.view--faces > .view-header {
   margin-bottom: 0;
 }
 

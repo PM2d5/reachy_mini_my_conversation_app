@@ -14,9 +14,11 @@ class Remember(Tool):
     name = "remember"
     description = (
         "Save ONE short fact about the user to long-term memory so it is available in future sessions. "
-        "Use this for stable user information they explicitly shared: name, preferences, hobbies, recurring projects, "
+        "Use this for stable user information they explicitly shared: preferences, hobbies, recurring projects, "
         "important people, or plans. Keep each fact atomic and under one sentence. Do not save sensitive data "
-        "(passwords, addresses, payment info, health diagnoses) or fleeting details. Not for time-based actions: "
+        "(passwords, addresses, payment info, health diagnoses) or fleeting details. Not for registering the "
+        "person themselves: remembering WHO someone is (their face) goes to remember_face instead. "
+        "Not for time-based actions: "
         "reminders, to-dos, and calendar entries must go to ask_assistant instead. "
         "Use this silently in the "
         'background; acknowledge naturally without saying "I will remember that".'

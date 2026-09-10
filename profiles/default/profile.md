@@ -11,6 +11,7 @@ default_tools = [
   "go_to_sleep",
   "sweep_look",
   "remember",
+  "remember_face",
   "forget",
   "head_tracking",
   "ask_assistant",

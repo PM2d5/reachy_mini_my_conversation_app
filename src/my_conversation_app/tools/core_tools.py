@@ -17,6 +17,7 @@ from my_conversation_app.config import config, list_tool_module_names
 from my_conversation_app.mcp_client import McpToolTimeoutError, McpToolInvocationError
 from my_conversation_app.tool_spaces import build_remote_client, read_installed_tool_spaces
 from my_conversation_app.profile_store import DEFAULT_PROFILE_NAME
+from my_conversation_app.face_recognition import SessionIdentity, FaceRecognitionService
 from my_conversation_app.profile_toolsets import read_profile_tool_names
 from my_conversation_app.tools.tool_constants import SystemTool
 
@@ -45,6 +46,10 @@ class ToolDependencies:
     motion_duration_s: float = 1.0
     go_to_sleep: Callable[[], dict[str, Any]] | None = None
     conversation_history: "ConversationHistory | None" = None
+    # Real types, not forward refs: pydantic resolves ToolDependencies when it
+    # validates ToolCallRoutine, and quoted names would be unresolvable here.
+    face_recognizer: FaceRecognitionService | None = None
+    current_identity: SessionIdentity | None = None
 
 
 class ConversationHistory:

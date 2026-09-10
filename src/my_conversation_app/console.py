@@ -42,6 +42,7 @@ from my_conversation_app.config import (
 )
 from my_conversation_app.prompts import get_session_voice, get_session_instructions
 from my_conversation_app.streaming import AdditionalOutputs, audio_to_float32
+from my_conversation_app.face_routes import register_face_methods
 from my_conversation_app.audio.wake_word import WakeWordDetector
 from my_conversation_app.startup_settings import read_startup_settings, write_startup_settings
 from my_conversation_app.tools.core_tools import initialize_tools
@@ -155,13 +156,16 @@ class LocalStream:
         self._attach_observers_to_handler()
 
     def _attach_observers_to_handler(self) -> None:
-        """Wire the handler's activity + transcript observers to JSON-RPC pushes."""
+        """Wire the handler's activity + transcript + identity observers to JSON-RPC pushes."""
         setter = getattr(self.handler, "set_activity_observer", None)
         if callable(setter):
             setter(self._dispatch_activity)
         transcript_setter = getattr(self.handler, "set_transcript_observer", None)
         if callable(transcript_setter):
             transcript_setter(self._dispatch_transcript)
+        identity_setter = getattr(self.handler, "set_identity_observer", None)
+        if callable(identity_setter):
+            identity_setter(self._dispatch_identity)
 
     def _dispatch_transcript(self, role: str, text: str, final: bool) -> None:
         """Push a conversation.transcript notification to JSON-RPC clients."""
@@ -270,6 +274,17 @@ class LocalStream:
         """Push a conversation.phase notification to JSON-RPC clients."""
         if self._rpc is not None:
             self._rpc.broadcast_threadsafe("conversation.phase", {"phase": phase, "reason": reason})
+
+    def _dispatch_identity(self, identity: Any) -> None:
+        """Push a conversation.identity notification to JSON-RPC clients."""
+        if self._rpc is not None:
+            self._rpc.broadcast_threadsafe(
+                "conversation.identity",
+                {
+                    "name": getattr(identity, "name", None),
+                    "source": getattr(identity, "source", None),
+                },
+            )
 
     def seconds_since_activity(self) -> float:
         """Seconds since the live handler last saw conversation activity."""
@@ -732,6 +747,11 @@ class LocalStream:
             )
         except Exception:
             logger.exception("Failed to register profile tool methods; personality tool settings will be unavailable")
+
+        try:
+            register_face_methods(rpc, instance_path=self._instance_path)
+        except Exception:
+            logger.exception("Failed to register face methods; the face management UI will be unavailable")
 
         self._settings_initialized = True
 

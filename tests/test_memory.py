@@ -19,6 +19,7 @@ from my_conversation_app.memory import (
 )
 from my_conversation_app.tools.forget import Forget
 from my_conversation_app.tools.remember import Remember
+from my_conversation_app.face_recognition import SessionIdentity
 from my_conversation_app.tools.core_tools import ToolDependencies
 
 
@@ -103,3 +104,17 @@ def test_prompt_includes_memory_fragment(tmp_path: Path, monkeypatch: pytest.Mon
     assert "Things you remember about the user" in instructions
     assert "- Prefers concise answers" in instructions
     assert "## IDENTITY" in instructions
+
+
+def test_prompt_includes_identity_fragment_for_known_user(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """A recognized user is named in the instructions; guests add nothing."""
+    monkeypatch.setattr(config, "REACHY_MINI_CUSTOM_PROFILE", None)
+    clear_memory_facts(tmp_path)
+    identity = SessionIdentity(name="凯蕾", face_id="f_1")
+
+    with_identity = prompts_mod.get_session_instructions(instance_path=tmp_path, identity=identity)
+    without_identity = prompts_mod.get_session_instructions(instance_path=tmp_path)
+
+    assert "凯蕾" in with_identity
+    assert "face recognition" in with_identity
+    assert "凯蕾" not in without_identity

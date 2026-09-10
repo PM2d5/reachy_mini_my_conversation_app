@@ -2,6 +2,7 @@
 
 import random
 import logging
+from typing import TYPE_CHECKING
 from pathlib import Path
 
 from my_conversation_app.config import config, get_default_voice
@@ -13,6 +14,10 @@ from my_conversation_app.profile_store import (
     read_profile,
     read_packaged_default_profile,
 )
+
+
+if TYPE_CHECKING:
+    from my_conversation_app.face_recognition import SessionIdentity
 
 
 logger = logging.getLogger(__name__)
@@ -73,6 +78,60 @@ WAKE_ACKNOWLEDGEMENT_PROMPTS = (
         "mid-thought — in the language you speak. No full sentence."
     ),
 )
+
+# Same rotation mechanics as the acks above, but personalized: face recognition
+# resolved who woke the robot, and the {name} slot lets each flavor greet them
+# as a familiar person instead of a stranger. Every wake opens a memoryless
+# session, so near-identical "greet them by name" styles all converge to the
+# same words — each flavor below must be a distinct register, like the guest
+# pool above (observed: four samey styles, one identical 「凯磊，早啊」every time).
+# Realtime models have no clock: the {clock} slot carries the actual local time,
+# without which any "time of day" greeting is a guess (observed: 22点说早上好).
+KNOWN_USER_WAKE_ACKNOWLEDGEMENT_PROMPTS = (
+    (
+        "The user just woke you with the wake word and you recognize them — their name "
+        "is {name}. Answer with a simple spoken call-back: just their name plus one short "
+        "acknowledging word, the way you answer a friend calling you — in the language "
+        "you speak. No greeting formula."
+    ),
+    (
+        "The user just woke you with the wake word and you recognize them: {name}. It is "
+        "now {clock} local time. Answer with one very short spoken greeting that matches "
+        "THAT time of day — morning, afternoon, evening, or night, never another — and "
+        "includes their name — two or three words at most, in the language you speak. No "
+        "full sentence."
+    ),
+    (
+        "The user just woke you with the wake word and you recognize them: {name}. Answer "
+        "with one flat, low-energy spoken acknowledgement — their name plus a lazy little "
+        "syllable, as if you were dozing comfortably and can't be bothered — two or three "
+        "words at most, in the language you speak. No full sentence, no enthusiasm."
+    ),
+    (
+        "The user just woke you with the wake word and you recognize them: {name}. Answer "
+        'with one very short playful spoken tease using their name — a light "back again?" '
+        'or "what are we doing today?" vibe — two or three words at most, in the language '
+        "you speak. No full sentence."
+    ),
+    (
+        "The user just woke you with the wake word and you recognize them: {name}. Answer "
+        "with one very short casual spoken half-greeting — a hummed syllable or interjection "
+        "followed by their name, as if you were mid-thought — in the language you speak. "
+        "No full sentence."
+    ),
+)
+
+
+def format_identity_for_prompt(identity: "SessionIdentity | None") -> str:
+    """Return the session-identity fragment, empty for unrecognized users."""
+    if identity is None:
+        return ""
+    return (
+        f"The person you are talking to is {identity.name} (confirmed by face recognition). "
+        "Address them by name naturally — now and then, not every sentence — and treat what "
+        "you remember about them as being about them."
+    )
+
 
 # Same memoryless-session problem as wake acks: the app rotates these wait-line
 # styles itself. Each entry is a style, not a literal line, so every voicing
@@ -171,8 +230,11 @@ def _active_profile() -> ProfileDefinition:
     return read_profile(config.REACHY_MINI_CUSTOM_PROFILE)
 
 
-def get_session_instructions(instance_path: str | Path | None = None) -> str:
-    """Return instructions for the active profile with memory context."""
+def get_session_instructions(
+    instance_path: str | Path | None = None,
+    identity: "SessionIdentity | None" = None,
+) -> str:
+    """Return instructions for the active profile with memory and identity context."""
     selected_profile = config.REACHY_MINI_CUSTOM_PROFILE
     profile_name = selected_profile or DEFAULT_PROFILE_NAME
     try:
@@ -192,10 +254,13 @@ def get_session_instructions(instance_path: str | Path | None = None) -> str:
         raise RuntimeError("Default profile has no usable instructions")
 
     memory_prompt = format_memory_for_prompt(instance_path)
+    identity_prompt = format_identity_for_prompt(identity)
     # The vision rule leads the instructions: measured 5/5 camera-tool calls for
     # visual questions with qwen3.5-omni-flash-realtime, vs 3/5 at the tail.
     # The expression rule rides right behind it for the same reason.
-    parts = [part for part in (CAMERA_TOOL_RULE, EMOTION_TOOL_RULE, memory_prompt, instructions) if part]
+    parts = [
+        part for part in (CAMERA_TOOL_RULE, EMOTION_TOOL_RULE, memory_prompt, identity_prompt, instructions) if part
+    ]
     combined = "\n\n".join(parts)
     logger.info(
         "Session instructions: %d chars, vision rule at offset %d", len(combined), combined.find("## VISION RULE")

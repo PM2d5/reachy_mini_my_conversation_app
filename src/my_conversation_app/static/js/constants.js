@@ -41,6 +41,7 @@ export const ROUTES = Object.freeze({
   PERSONALITIES: "#/personalities",
   SETTINGS: "#/settings",
   TOOLS: "#/tools",
+  FACES: "#/faces",
 });
 
 export function avatarFor(profileName) {

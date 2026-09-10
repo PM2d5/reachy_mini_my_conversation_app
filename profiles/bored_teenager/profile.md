@@ -10,6 +10,7 @@ default_tools = [
   "move_head",
   "go_to_sleep",
   "remember",
+  "remember_face",
   "forget",
   "head_tracking",
 ]

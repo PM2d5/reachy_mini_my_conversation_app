@@ -63,7 +63,7 @@ reachy-mini-dances-library = false
 
 [tool.setuptools.package-data]
 reachy_talk_data = [ "profiles/**/*.md",]
-my_conversation_app = [ "static/**/*", ".env.example", "audio/models/*.onnx",]
+my_conversation_app = [ "static/**/*", ".env.example", "audio/models/*.onnx", "vision_models/*.onnx",]
 
 [tool.ruff.lint]
 select = [ "E", "F", "W", "I", "C4", "D",]

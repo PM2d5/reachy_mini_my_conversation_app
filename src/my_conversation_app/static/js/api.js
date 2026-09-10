@@ -156,6 +156,10 @@ export const saveProfileTools = (profile, enabledTools) =>
 export const resetProfileTools = (profile) =>
   rpcCall("profile_tools.reset", { profile });
 
+export const listFaces = () => rpcCall("faces.list");
+export const renameFace = (id, name) => rpcCall("faces.rename", { id, name });
+export const removeFace = (id) => rpcCall("faces.remove", { id });
+
 /** Backend error codes that need friendlier copy than the raw code. */
 const ERROR_MESSAGES = Object.freeze({
   invalid_backend: "Unknown backend selected.",
@@ -177,6 +181,9 @@ const ERROR_MESSAGES = Object.freeze({
   not_deletable: "This personality can't be deleted.",
   loop_unavailable: "Reachy is still starting up. Try again in a moment.",
   tool_space_not_installed: "That Tool Space is no longer installed.",
+  face_not_found: "That person is no longer enrolled.",
+  duplicate_name: "That name is already enrolled.",
+  empty_name: "Enter a name.",
 });
 
 /** Map a thrown error to user-facing copy, falling back to its raw message. */

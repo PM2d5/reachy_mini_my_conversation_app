@@ -326,6 +326,24 @@ def resolve_wake_word_active_timeout_s() -> float:
     return max(timeout_s, 0.0)
 
 
+FACE_RECOGNITION_ENABLED_ENV = "REACHY_MINI_FACE_RECOGNITION_ENABLED"
+FACE_MATCH_THRESHOLD_ENV = "REACHY_MINI_FACE_MATCH_THRESHOLD"
+DEFAULT_FACE_MATCH_THRESHOLD = 0.45
+
+
+def resolve_face_match_threshold() -> float:
+    """Read the face-recognition cosine match threshold (0..1)."""
+    raw_value = (os.getenv(FACE_MATCH_THRESHOLD_ENV) or "").strip()
+    if not raw_value:
+        return DEFAULT_FACE_MATCH_THRESHOLD
+    try:
+        threshold = float(raw_value)
+    except ValueError:
+        logger.warning("Ignoring invalid %s=%r; using default.", FACE_MATCH_THRESHOLD_ENV, raw_value)
+        return DEFAULT_FACE_MATCH_THRESHOLD
+    return min(max(threshold, 0.0), 1.0)
+
+
 def _normalize_goodbye_keywords(value: str | None) -> tuple[str, ...]:
     """Parse the comma-separated goodbye keywords that end active listening."""
     keywords = tuple(item.strip().lower() for item in (value or "").split(",") if item.strip())
@@ -567,6 +585,8 @@ class Config:
     WAKE_WORD_THRESHOLD = resolve_wake_word_threshold()
     WAKE_WORD_ACTIVE_TIMEOUT_S = resolve_wake_word_active_timeout_s()
     GOODBYE_KEYWORDS = _normalize_goodbye_keywords(os.getenv(GOODBYE_KEYWORDS_ENV))
+    FACE_RECOGNITION_ENABLED = _env_flag(FACE_RECOGNITION_ENABLED_ENV, default=True)
+    FACE_MATCH_THRESHOLD = resolve_face_match_threshold()
     OPENCLAW_API_URL = (os.getenv(OPENCLAW_API_URL_ENV) or "").strip()
     OPENCLAW_API_TOKEN = os.getenv(OPENCLAW_API_TOKEN_ENV)
     OPENCLAW_TIMEOUT_S = resolve_openclaw_timeout_s()
@@ -683,6 +703,8 @@ def refresh_runtime_config_from_env() -> None:
     config.WAKE_WORD_THRESHOLD = resolve_wake_word_threshold()
     config.WAKE_WORD_ACTIVE_TIMEOUT_S = resolve_wake_word_active_timeout_s()
     config.GOODBYE_KEYWORDS = _normalize_goodbye_keywords(os.getenv(GOODBYE_KEYWORDS_ENV))
+    config.FACE_RECOGNITION_ENABLED = _env_flag(FACE_RECOGNITION_ENABLED_ENV, default=True)
+    config.FACE_MATCH_THRESHOLD = resolve_face_match_threshold()
     config.OPENCLAW_API_URL = (os.getenv(OPENCLAW_API_URL_ENV) or "").strip()
     config.OPENCLAW_API_TOKEN = os.getenv(OPENCLAW_API_TOKEN_ENV)
     config.OPENCLAW_TIMEOUT_S = resolve_openclaw_timeout_s()

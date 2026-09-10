@@ -20,6 +20,7 @@ from my_conversation_app.utils import (
     setup_logger,
     log_connection_troubleshooting,
 )
+from my_conversation_app.face_recognition import FaceRecognitionService
 
 
 if TYPE_CHECKING:
@@ -174,6 +175,7 @@ def run(
         instance_path=instance_path,
         camera_enabled=not args.no_camera,
         conversation_history=ConversationHistory(),
+        face_recognizer=FaceRecognitionService(instance_path) if not args.no_camera else None,
     )
 
     def build_handler(startup_voice: Optional[str] = None) -> ConversationHandler:

@@ -2,7 +2,7 @@
 
 > 本文件是 my_conversation_app 当前功能的权威清单。**任何改变应用行为的改动，必须在同一个 PR 里更新本文件**（规则见 `AGENTS.md` 的 *Documentation* 一节）。
 >
-> 最后核对：2026-09-09 · `master`（含待机期间丢弃迟到动作与工具结果回写的连接关闭降级、会话退出重置响应完成事件（修复拜别待机后唤醒应答被 30 s 发送超时卡住）、DashScope websocket 关闭握手 2 s 超时（网关不回应 close 帧，默认 10 s 让每次拜别待机白等满超时）、按模型家族区分的 DashScope 音色目录与跨家族音色回退、静默表情轮的语音补救（模型只回 play_emotion 不说话时补发 response.create，裸表情命令除外）、表演请求/台词情绪的本地表情触发、情绪对话主动表情、本地表情触发与表情工具去重、表情规则指令、ask_assistant / OpenClaw 对接、天线等待摆动、DashScope 摄像头图像注入、可选视觉模型的摄像头画面描述中继、视觉规则指令与会话温度配置、转头后注视保持与拍照落位等待、默认开场问候多风格随机挑选（会话无记忆，单一指令导致开场白趋同）、默认告别词新增「滚吧」）
+> 最后核对：2026-09-10 · `master`（新增人脸识别与身份感知：会话建立时本地识别面前的人（YuNet 检测与 MobileFaceNet ONNX embedding 均随包分发、离线秒载），识别与抬头/建连并行、最多等 3 s、失败静默按访客；命中后系统提示词插入身份块、唤醒应答带名字、广播 conversation.identity；高置信命中渐进补参考向量；`remember_face` 工具 +「我叫X，记住我」本地触发注册；camera 工具同帧搭车识别（中继模式保留 face 字段）；faces.v1.json 存储 + Web「People」管理页 + faces.* JSON-RPC；两项新配置 env。此前：待机期间丢弃迟到动作与工具结果回写的连接关闭降级、会话退出重置响应完成事件（修复拜别待机后唤醒应答被 30 s 发送超时卡住）、DashScope websocket 关闭握手 2 s 超时（网关不回应 close 帧，默认 10 s 让每次拜别待机白等满超时）、按模型家族区分的 DashScope 音色目录与跨家族音色回退、静默表情轮的语音补救（模型只回 play_emotion 不说话时补发 response.create，裸表情命令除外）、表演请求/台词情绪的本地表情触发、情绪对话主动表情、本地表情触发与表情工具去重、表情规则指令、ask_assistant / OpenClaw 对接、天线等待摆动、DashScope 摄像头图像注入、可选视觉模型的摄像头画面描述中继、视觉规则指令与会话温度配置、转头后注视保持与拍照落位等待、默认开场问候多风格随机挑选（会话无记忆，单一指令导致开场白趋同）、默认告别词新增「滚吧」）
 
 应用运行在 Reachy Mini SDK（`reachy_mini`）之上：语音进、语音出 + 机器人动作的实时对话应用，带 Web 管理界面、人格系统、长期记忆、可扩展的 LLM 工具体系（含远程 MCP Tool Spaces）。架构图见 `README.md`（源文件 `docs/scheme.mmd`）。
 
@@ -63,6 +63,7 @@
 代码：`console.py`、`huggingface_realtime.py`、`streaming.py`
 
 - **开场问候**：每次会话建立后注入 `greeting` 提示（profile 可自定义；默认为一组 5 种风格的开场指令，应用侧每次会话随机挑选——会话间无记忆，单一指令要求模型"每次换措辞"无效，开场白会趋同）；从唤醒词恢复时改为极简应答（见第 4 节）。
+- **会话身份识别**（`face_recognition.py`）：每次会话建立时（冷启动、唤醒恢复、切人格/音色重建）对面前的人做本地人脸识别——SDK YuNet 检测（`reachy_mini.vision.face_detector`；模型与 embedding 一样**随包内置**于 `vision_models/`，首次加载自动种入 HF 缓存并以离线模式瞬时读取——SDK 默认的 hub 下载在不通 HF 的网络下会重试挂死一分钟以上）取最大脸 → 双眼+鼻子 3 点仿射对齐 → 内置 MobileFaceNet ONNX embedding（onnxruntime 本地推理，与唤醒词同款机制）→ 与 `faces.v1.json` 中注册人脸做余弦匹配（阈值 `REACHY_MINI_FACE_MATCH_THRESHOLD`）。识别任务在唤醒/启动瞬间即启动，与抬头动画、websocket 建连并行；组装系统提示词前最多等 3 s，超时/无脸/模型不可用一律静默按未识别处理，绝不阻塞对话（模型加载另有 75 s 硬上限，加载线程为 daemon，断网环境也拖不死关机流程）。命中后：系统提示词在记忆块后插入「当前对话用户是X（人脸识别确认）」身份块（未识别不插入，对访客行为与从前一致，不主动盘问）；唤醒应答改用带名字的熟人变体池（`prompts.py` 的 `KNOWN_USER_WAKE_ACKNOWLEDGEMENT_PROMPTS`，独立轮换索引）；向 JSON-RPC 客户端广播 `conversation.identity`。高置信命中（阈值+0.08）把该帧 embedding 追加进此人参考集（每人上限 5、丢最旧，外观变化自动跟上）并刷新 lastSeen。注册：用户说「我叫X，记住我」（中英句式）→ 模型调 `remember_face` 工具，或本地触发兜底（`match_face_enrollment_command`，与表情指令同机制，裸「记住我」不触发、留给模型追问名字后正常调工具；60 s 同名去重防双发）；等头部动作落位后连拍 3 帧、≥2 帧检出人脸才入库，同名拒绝、最多 10 人。`camera` 工具拍照时同帧顺带识别并更新 lastSeen，结果附 `face: {name, relation: user|other|unknown}` 字段（b64 图片字段照旧剥离，face 字段模型可见；DashScope 视觉中继模式下并入 caption 结果不丢失），让模型自然感知「面前换人了」。
 - **聆听与打断**：服务端 VAD 负责断句；用户一开口（`speech_started`）即本地清空播放队列实现真打断（barge-in），同时冻结天线动作表示"在听"。
 - **转写流**：用户部分/最终转写、助手转写均推送到控制台日志与 JSON-RPC 客户端（`conversation.transcript` 通知）。
 - **回合状态机**：对外广播 `listening / thinking / speaking / ready`（`conversation.turn` 通知），驱动 UI 光球。
@@ -94,7 +95,7 @@
 会话有两个相位，经 `conversation.phase {phase, reason}` 广播：
 
 - **active**：正常聆听对话。首次启动即进入，机器人先问候。
-- **standby**：实时会话暂停，机器人缩头下沉（头部保持水平、不低头，与真正的休眠姿态区分；天线垂落静止，2 s 插值），期间抑制呼吸动作，并丢弃待机期间新排队的动作（如告别后模型迟到的 `play_emotion` 不会再把头顶起来）；麦克风只喂给离线唤醒词检测器（openWakeWord，ONNX，16 kHz）。默认唤醒词 **"hi reachy"**，由内置自训模型 `audio/models/hi_reachy.onnx` 检测；说出唤醒词即抬头回中立位（1.5 s 插值）并恢复会话，以极简应答代替重新问候（`WAKE_ACKNOWLEDGEMENT_PROMPTS`：两三个词、跟所讲语言一致，如"我在""干嘛"；每次唤醒是无记忆的新会话，由应用在几种应答风格间轮换并随机起步，保证说法有变化）。
+- **standby**：实时会话暂停，机器人缩头下沉（头部保持水平、不低头，与真正的休眠姿态区分；天线垂落静止，2 s 插值），期间抑制呼吸动作，并丢弃待机期间新排队的动作（如告别后模型迟到的 `play_emotion` 不会再把头顶起来）；麦克风只喂给离线唤醒词检测器（openWakeWord，ONNX，16 kHz）。默认唤醒词 **"hi reachy"**，由内置自训模型 `audio/models/hi_reachy.onnx` 检测；说出唤醒词即抬头回中立位（1.5 s 插值）并恢复会话，以极简应答代替重新问候（`WAKE_ACKNOWLEDGEMENT_PROMPTS`：两三个词、跟所讲语言一致，如"我在""干嘛"；每次唤醒是无记忆的新会话，由应用在几种应答风格间轮换并随机起步，保证说法有变化）。唤醒瞬间并行启动人脸识别（与抬头/建连同时进行，见第 2 节），识别到注册用户时唤醒应答改为带名字的熟人变体。
 
 进入 standby 的两个触发条件：
 
@@ -133,8 +134,9 @@
 | `move_head` | `direction`（left/right/up/down/front） | 头部转向，转到位后注视保持约 4 秒再自然回中；`needs_response=True`，用户询问该方向内容时模型在同一轮接着调 `camera` 描述，纯转向指令则只口头回应 |
 | `sweep_look` | 无 | 头+身体左右环视一周，约 14 秒 |
 | `head_tracking` | `enabled`（必填） | 开关人脸跟随 |
-| `remember` | `fact`（必填，一句以内） | 保存用户事实到长期记忆（§10） |
+| `remember` | `fact`（必填，一句以内） | 保存用户事实到长期记忆（§10）；注册"人本身"（人脸）改用 `remember_face` |
 | `forget` | `query`（必填，子串匹配） | 删除一条记忆，多条时报告其他候选 |
+| `remember_face` | `name`（必填，≤24 字符） | 注册说话人的脸供日后识别打招呼（见 §2 会话身份识别）：等头部落位后连拍 3 帧、≥2 帧检出人脸才入库，同名拒绝、满 10 人拒绝；「我叫X，记住我」另有本地触发兜底，60 s 同名去重；`REACHY_MINI_FACE_RECOGNITION_ENABLED=0` 时对模型隐藏；删除/重命名走 Web「People」页（§11） |
 | `idle_do_nothing` | `reason`（可选） | 空闲轮次保持静止；结果不回传模型 |
 | `go_to_sleep` | 无 | 机器人入睡并停止应用（仅在用户明确要求时） |
 | `ask_assistant` | `query`（必填） | 把复杂任务委托给家庭助手 OpenClaw（实时信息查询、日程提醒、长期家庭记忆、多步规划）。最近对话（含上次结果）由系统自动注入（5 轮、每轮 200 字），模型只需传 query——history 不进工具 schema，避免 Qwen 截断长函数参数。回复经 markdown/emoji 清洗后回传模型转述；调用期间进入静默等待态（见 §2）。危险指令（删除文件/卸载/发消息/花钱）在工具层直接拦截拒答，不发请求；超时或网络错误返回 `{"ok": false, "error": ...}`，由模型播报兜底话术。需配置 `OPENCLAW_API_URL` + `OPENCLAW_API_TOKEN`，未配置时该工具对模型隐藏 |
@@ -207,10 +209,11 @@
 
 | 路由 | 视图 | 能做什么 |
 |---|---|---|
-| `#/` | Talk | 对话光球（点击=静音/取消静音）、实时字幕、回合状态、切人格后的应用中提示 |
+| `#/` | Talk | 对话光球（点击=静音/取消静音）、实时字幕、回合状态、切人格后的应用中提示、当前识别到的用户名徽章（`conversation.identity` 驱动） |
 | `#/personalities` | Home | 人格卡片网格：切换、新建/编辑/删除自建人格（名称+指令+问候语）、管理工具入口、设为默认 |
 | `#/settings` | Settings | HF 连接模式（deployed/local+主机端口）、语音选择（即时生效并持久化）、当前连接状态面板 |
 | `#/tools` | Tools | 按 profile 勾选启用工具（内置/外部/Tool Space 分组、恢复默认）、安装/卸载 Tool Space |
+| `#/faces` | People | 已注册人脸管理：列表（名字/参考照片数/最近识别时间）、重命名（重名报错）、删除（确认弹窗） |
 
 **JSON-RPC 方法**
 
@@ -222,8 +225,9 @@
 | 语音 | `voices.list / current / apply` |
 | 工具集 | `profile_tools.get / save / reset` |
 | Tool Spaces | `tool_spaces.list / add / remove` |
+| 人脸 | `faces.list / rename {id, name} / remove {id}` |
 
-**服务端通知**（服务器 → 客户端推送）：`conversation.transcript {role, text, final}`、`conversation.turn {state}`、`conversation.phase {phase, reason}`、`conversation.activity {reason}`、`conversation.level {role, rms}`（约 15 Hz 音量表，驱动光球）。
+**服务端通知**（服务器 → 客户端推送）：`conversation.transcript {role, text, final}`、`conversation.turn {state}`、`conversation.phase {phase, reason}`、`conversation.activity {reason}`、`conversation.identity {name, source}`（会话建立时人脸识别结果，`name` 为空即访客）、`conversation.level {role, rms}`（约 15 Hz 音量表，驱动光球）。
 
 ## 12. 配置参考
 
@@ -253,6 +257,8 @@
 | `REACHY_MINI_WAKE_WORD_THRESHOLD` | `0.5` | 检测阈值 0–1，越低越灵敏 |
 | `REACHY_MINI_WAKE_WORD_ACTIVE_TIMEOUT_S` | `300` | 活动空闲退出秒数，0 禁用（ask_assistant 等待期间自动挂起） |
 | `REACHY_MINI_GOODBYE_KEYWORDS` | `再见,拜拜,滚吧,goodbye,bye-bye,bye bye` | 触发 standby 的告别词 |
+| `REACHY_MINI_FACE_RECOGNITION_ENABLED` | `1` | 人脸识别总开关；0 关闭会话识别、camera 搭车与 `remember_face` 工具 |
+| `REACHY_MINI_FACE_MATCH_THRESHOLD` | `0.45` | 人脸余弦匹配阈值（0–1，调高更严格）；高于阈值+0.08 的命中会渐进补参考向量 |
 | `REACHY_MINI_WAKE_WORD_DUMP_DIR` | — | 调试：转储待机麦克风音频为 wav |
 | `OPENCLAW_API_URL` | — | OpenClaw 网关的 OpenAI 兼容 completions 地址；未配置则隐藏 `ask_assistant` |
 | `OPENCLAW_API_TOKEN` | — | OpenClaw 网关 Bearer token |

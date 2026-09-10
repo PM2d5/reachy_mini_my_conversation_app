@@ -32,12 +32,14 @@ export async function mountTalkView({ outlet, signal }) {
   let togglePending = false;
   let activePersonality = null;
   let subscription = null;
+  let unsubscribeIdentity = () => {};
 
   const caption = h(
     "p",
     { class: "talk__caption", role: "status", "aria-live": "polite" },
     CAPTION_BY_STATE[ORB_STATES.CONNECTING]
   );
+  const identityBadge = h("p", { class: "talk__identity", "aria-live": "polite" });
   const defaultAction = document.querySelector('[data-component="default-personality-action"]');
   if (defaultAction) {
     defaultAction.hidden = true;
@@ -59,7 +61,8 @@ export async function mountTalkView({ outlet, signal }) {
     "section",
     { class: "view view--talk" },
     h("div", { class: "talk__orb-wrap" }, orb.root),
-    caption
+    caption,
+    identityBadge
   );
   outlet.replaceChildren(view);
 
@@ -89,6 +92,11 @@ export async function mountTalkView({ outlet, signal }) {
   orb.root.disabled = false;
   syncMicAria();
 
+  unsubscribeIdentity = subscribe("conversation.identity", (params) => {
+    const name = (params?.name || "").trim();
+    identityBadge.textContent = name ? `Talking to ${name}` : "";
+  });
+
   subscription = subscribeConversationEvents({
     // Re-sync mic state after subscribing: another tab may have toggled it.
     onReady: async () => {
@@ -114,6 +122,7 @@ export async function mountTalkView({ outlet, signal }) {
 
   function cleanup() {
     subscription?.close();
+    unsubscribeIdentity();
     orb.dispose();
     if (defaultAction) {
       defaultAction.hidden = true;
