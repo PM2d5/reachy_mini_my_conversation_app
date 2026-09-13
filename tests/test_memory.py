@@ -117,4 +117,6 @@ def test_prompt_includes_identity_fragment_for_known_user(tmp_path: Path, monkey
 
     assert "凯蕾" in with_identity
     assert "face recognition" in with_identity
+    # The fragment must anchor the model against saying the name every reply.
+    assert "no name at all" in with_identity
     assert "凯蕾" not in without_identity

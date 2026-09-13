@@ -122,14 +122,20 @@ KNOWN_USER_WAKE_ACKNOWLEDGEMENT_PROMPTS = (
 )
 
 
+# Observed: an "address them by name" instruction, even hedged with "not every
+# sentence", makes the model say the name in most replies. Anchoring on how rarely
+# people name a friend mid-conversation is what actually holds it back.
 def format_identity_for_prompt(identity: "SessionIdentity | None") -> str:
     """Return the session-identity fragment, empty for unrecognized users."""
     if identity is None:
         return ""
     return (
         f"The person you are talking to is {identity.name} (confirmed by face recognition). "
-        "Address them by name naturally — now and then, not every sentence — and treat what "
-        "you remember about them as being about them."
+        "You know who they are, but do not sprinkle their name through the chat — people "
+        "rarely say a friend's name mid-conversation. Use it only to greet them, to call "
+        "for their attention, or when the feeling of the moment truly calls for it; most "
+        "replies should contain no name at all. Treat what you remember about them as "
+        "being about them."
     )
 
 

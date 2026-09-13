@@ -97,5 +97,8 @@ class Camera(Tool):
         if outcome.face_id is None:
             return {"name": None, "relation": "unknown"}
         identity = deps.current_identity
-        relation = "user" if identity is not None and identity.face_id == outcome.face_id else "other"
-        return {"name": outcome.name, "relation": relation}
+        if identity is not None and identity.face_id == outcome.face_id:
+            # The system prompt already names the session user; re-sending the name
+            # with every shot nudges the model into saying it far too often.
+            return {"relation": "user"}
+        return {"name": outcome.name, "relation": "other"}

@@ -89,7 +89,7 @@ async def test_camera_tool_waits_for_head_motion_to_settle() -> None:
 
 @pytest.mark.asyncio
 async def test_camera_tool_appends_face_note_for_session_user() -> None:
-    """The piggyback recognition labels the recognized session user."""
+    """The piggyback recognition labels the session user without repeating their name."""
     reachy_mini = MagicMock()
     reachy_mini.media.get_frame_jpeg.return_value = b"\xff\xd8jpeg\xff\xd9"
     reachy_mini.media.get_frame.return_value = np.zeros((240, 320, 3), dtype=np.uint8)
@@ -99,7 +99,7 @@ async def test_camera_tool_appends_face_note_for_session_user() -> None:
 
     result = await Camera()(deps, question="How do I look?")
 
-    assert result["face"] == {"name": "凯蕾", "relation": "user"}
+    assert result["face"] == {"relation": "user"}
 
 
 @pytest.mark.asyncio
