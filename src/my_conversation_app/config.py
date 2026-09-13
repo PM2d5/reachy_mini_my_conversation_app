@@ -328,7 +328,9 @@ def resolve_wake_word_active_timeout_s() -> float:
 
 FACE_RECOGNITION_ENABLED_ENV = "REACHY_MINI_FACE_RECOGNITION_ENABLED"
 FACE_MATCH_THRESHOLD_ENV = "REACHY_MINI_FACE_MATCH_THRESHOLD"
-DEFAULT_FACE_MATCH_THRESHOLD = 0.45
+# Observed on the single wake frame: the same enrolled person lands 0.40–0.43
+# while settled frames reach 0.9+; 0.45 rejected them as often as it accepted.
+DEFAULT_FACE_MATCH_THRESHOLD = 0.40
 
 
 def resolve_face_match_threshold() -> float:

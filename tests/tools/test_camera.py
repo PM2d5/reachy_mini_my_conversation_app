@@ -103,6 +103,21 @@ async def test_camera_tool_appends_face_note_for_session_user() -> None:
 
 
 @pytest.mark.asyncio
+async def test_camera_tool_adopts_recognized_face_for_unidentified_session() -> None:
+    """A hit in a session without identity adopts that person and carries their name."""
+    reachy_mini = MagicMock()
+    reachy_mini.media.get_frame_jpeg.return_value = b"\xff\xd8jpeg\xff\xd9"
+    reachy_mini.media.get_frame.return_value = np.zeros((240, 320, 3), dtype=np.uint8)
+    deps = _deps(reachy_mini)
+    deps.face_recognizer = _FakeRecognizer(RecognitionOutcome("凯蕾", "f_1", 0.9, True))
+
+    result = await Camera()(deps, question="Who am I?")
+
+    assert result["face"] == {"name": "凯蕾", "relation": "user"}
+    assert deps.current_identity == SessionIdentity(name="凯蕾", face_id="f_1")
+
+
+@pytest.mark.asyncio
 async def test_camera_tool_marks_other_enrolled_and_unknown_faces() -> None:
     """A different enrolled person is "other"; an unmatched face is "unknown"."""
     reachy_mini = MagicMock()

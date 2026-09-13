@@ -4,6 +4,7 @@ import logging
 from typing import Any, Dict
 
 from my_conversation_app.config import config
+from my_conversation_app.face_recognition import SessionIdentity
 from my_conversation_app.tools.core_tools import Tool, ToolDependencies
 
 
@@ -94,10 +95,16 @@ class Camera(Tool):
             return None
         if not outcome.face_detected:
             return None
-        if outcome.face_id is None:
+        if outcome.face_id is None or outcome.name is None:
             return {"name": None, "relation": "unknown"}
         identity = deps.current_identity
-        if identity is not None and identity.face_id == outcome.face_id:
+        if identity is None:
+            # Wake-time recognition failed or timed out, so the instructions name
+            # no one; the dominant face on this shot is the person actually talking
+            # to the robot — adopt them and carry the name the model now lacks.
+            deps.current_identity = SessionIdentity(name=outcome.name, face_id=outcome.face_id)
+            return {"name": outcome.name, "relation": "user"}
+        if identity.face_id == outcome.face_id:
             # The system prompt already names the session user; re-sending the name
             # with every shot nudges the model into saying it far too often.
             return {"relation": "user"}
