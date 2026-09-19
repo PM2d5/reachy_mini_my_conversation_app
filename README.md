@@ -76,10 +76,13 @@ the head back up and resumes the session with a brief spoken acknowledgement —
 couple of words, like "I'm here", not a full greeting. Each wake opens a memoryless
 session, so the app rotates between a few acknowledgement flavors to keep them varied.
 
-The default wake word is **"hi reachy"**, detected by a custom model bundled in the
-app (`src/my_conversation_app/audio/models/hi_reachy.onnx`), trained locally with
-openWakeWord's automated pipeline. Set `REACHY_MINI_WAKE_WORD_MODELS` to use other
-pretrained models ("hey mycroft", "alexa", ...) or custom `.onnx` model paths instead.
+The default wake word is **"hi reachy"** (a natural pause between the words is
+fine), detected by a custom model bundled in the app
+(`src/my_conversation_app/audio/models/hi_reachy.onnx`), trained locally with
+openWakeWord's automated pipeline on fluent, paused, and single-word variants,
+so the bare word **"reachy"** also wakes it. Set `REACHY_MINI_WAKE_WORD_MODELS`
+to use other pretrained models ("hey mycroft", "alexa", ...) or custom `.onnx`
+model paths instead.
 
 ```bash
 # REACHY_MINI_WAKE_WORD_ENABLED=1                          # 0 keeps always-on listening
