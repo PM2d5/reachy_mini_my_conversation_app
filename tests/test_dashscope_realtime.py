@@ -120,6 +120,19 @@ def _connection() -> DashScopeConnection:
     return DashScopeConnection(websocket=None)  # type: ignore[arg-type]
 
 
+def _sent_session_payload(conn: DashScopeConnection, session: dict) -> dict:
+    """Capture the websocket frame emitted for a session.update."""
+    sent: list[str] = []
+
+    class FakeWebsocket:
+        async def send(self, message: str) -> None:
+            sent.append(message)
+
+    conn._connection = FakeWebsocket()  # type: ignore[assignment]
+    asyncio.run(conn.send({"type": "session.update", "session": session}))
+    return json.loads(sent[0])
+
+
 class TestEventTranslation:
     """Server event translation in the connection."""
 
@@ -207,27 +220,13 @@ def test_build_client_targets_configured_model(monkeypatch):
 class TestToolNameAliasing:
     """Namespaced MCP tool names are aliased to the model and restored on calls."""
 
-    def _sent_payload(self, conn, session):
-        """Capture the websocket frame emitted for a session.update."""
-        import asyncio
-
-        sent: list[str] = []
-
-        class FakeWebsocket:
-            async def send(self, message: str) -> None:
-                sent.append(message)
-
-        conn._connection = FakeWebsocket()  # type: ignore[assignment]
-        asyncio.run(conn.send({"type": "session.update", "session": session}))
-        return json.loads(sent[0])
-
     def test_temperature_rides_along_when_configured(self, monkeypatch):
         """A configured DashScope temperature is injected into every session update."""
         from my_conversation_app.config import config
 
         monkeypatch.setattr(config, "DASHSCOPE_TEMPERATURE", 0.3)
         conn = _connection()
-        payload = self._sent_payload(conn, {"voice": "Mione"})
+        payload = _sent_session_payload(conn, {"voice": "Mione"})
         assert payload["session"]["temperature"] == 0.3
 
     def test_temperature_absent_without_config(self, monkeypatch):
@@ -236,14 +235,14 @@ class TestToolNameAliasing:
 
         monkeypatch.setattr(config, "DASHSCOPE_TEMPERATURE", None)
         conn = _connection()
-        payload = self._sent_payload(conn, {"voice": "Mione"})
+        payload = _sent_session_payload(conn, {"voice": "Mione"})
         assert "temperature" not in payload["session"]
 
     def test_long_tool_names_are_aliased_and_restored(self):
         """Namespaced tools ship as short aliases and call events map back."""
         conn = _connection()
         original = "pollen_robotics_reachy_mini_search_tool__search_web"
-        payload = self._sent_payload(
+        payload = _sent_session_payload(
             conn,
             {
                 "tools": [
@@ -268,14 +267,137 @@ class TestToolNameAliasing:
     def test_alias_map_resets_between_sessions(self):
         """A new session.update clears stale aliases before re-registering tools."""
         conn = _connection()
-        self._sent_payload(
+        _sent_session_payload(
             conn, {"tools": [{"type": "function", "name": "a__get_time", "description": "", "parameters": {}}]}
         )
-        self._sent_payload(
+        _sent_session_payload(
             conn, {"tools": [{"type": "function", "name": "b__get_time", "description": "", "parameters": {}}]}
         )
         assert set(conn._tool_aliases) == {"ext0_get_time"}
         assert conn._tool_aliases["ext0_get_time"] == "b__get_time"
+
+
+class TestTurnDetection:
+    """Realtime sessions run their family's semantic-grade turn detection.
+
+    Backchannels and noise must not cut the model off mid-sentence.
+    """
+
+    _APP_SERVER_VAD = {"audio": {"input": {"turn_detection": {"type": "server_vad", "interrupt_response": True}}}}
+    _SEMANTIC_VAD = {"type": "semantic_vad", "threshold": 0.5, "silence_duration_ms": 800}
+    _SMART_TURN = {"type": "smart_turn"}
+
+    @pytest.mark.parametrize("model", ["qwen3.5-omni-flash-realtime", "qwen3.8-omni-flash-realtime"])
+    def test_semantic_capable_omni_upgrades_to_semantic_vad(self, monkeypatch, model):
+        """The app's server VAD becomes semantic VAD on Qwen3.5+ omni models."""
+        from my_conversation_app.config import config
+
+        monkeypatch.setattr(config, "DASHSCOPE_REALTIME_MODEL", model)
+        monkeypatch.setattr(config, "DASHSCOPE_TURN_DETECTION", None)
+        conn = _connection()
+        payload = _sent_session_payload(conn, dict(self._APP_SERVER_VAD))
+        assert payload["session"]["turn_detection"] == self._SEMANTIC_VAD
+        # The image-turn restore path must bring back the same semantic VAD.
+        assert conn._app_turn_detection == self._SEMANTIC_VAD
+
+    def test_legacy_omni_model_keeps_server_vad(self, monkeypatch):
+        """Older omni generations keep the app's server VAD.
+
+        Regression test: they used to be upgraded too, and the unsupported
+        turn_detection made DashScope reject the whole session.update, tools included.
+        """
+        from my_conversation_app.config import config
+
+        monkeypatch.setattr(config, "DASHSCOPE_REALTIME_MODEL", "qwen-omni-turbo-realtime-latest")
+        monkeypatch.setattr(config, "DASHSCOPE_TURN_DETECTION", None)
+        conn = _connection()
+        payload = _sent_session_payload(conn, dict(self._APP_SERVER_VAD))
+        assert payload["session"]["turn_detection"] == {"type": "server_vad", "interrupt_response": True}
+
+    def test_audio_model_upgrades_to_smart_turn(self, monkeypatch):
+        """The app's server VAD becomes smart_turn on Qwen-Audio realtime models."""
+        from my_conversation_app.config import config
+
+        monkeypatch.setattr(config, "DASHSCOPE_REALTIME_MODEL", "qwen-audio-3.0-realtime-plus")
+        monkeypatch.setattr(config, "DASHSCOPE_TURN_DETECTION", None)
+        conn = _connection()
+        payload = _sent_session_payload(conn, dict(self._APP_SERVER_VAD))
+        assert payload["session"]["turn_detection"] == self._SMART_TURN
+        assert conn._app_turn_detection == self._SMART_TURN
+
+    def test_server_vad_override_keeps_app_payload(self, monkeypatch):
+        """DASHSCOPE_TURN_DETECTION=server_vad keeps the plain server VAD."""
+        from my_conversation_app.config import config
+
+        monkeypatch.setattr(config, "DASHSCOPE_REALTIME_MODEL", "qwen3.5-omni-flash-realtime")
+        monkeypatch.setattr(config, "DASHSCOPE_TURN_DETECTION", "server_vad")
+        conn = _connection()
+        payload = _sent_session_payload(conn, dict(self._APP_SERVER_VAD))
+        assert payload["session"]["turn_detection"] == {"type": "server_vad", "interrupt_response": True}
+
+    def test_server_vad_override_works_on_audio_model_too(self, monkeypatch):
+        """The server_vad opt-out also reaches the Qwen-Audio family."""
+        from my_conversation_app.config import config
+
+        monkeypatch.setattr(config, "DASHSCOPE_REALTIME_MODEL", "qwen-audio-3.0-realtime-plus")
+        monkeypatch.setattr(config, "DASHSCOPE_TURN_DETECTION", "server_vad")
+        conn = _connection()
+        payload = _sent_session_payload(conn, dict(self._APP_SERVER_VAD))
+        assert payload["session"]["turn_detection"] == {"type": "server_vad", "interrupt_response": True}
+
+    def test_unsupported_mode_falls_back_to_family_default(self, monkeypatch, caplog):
+        """A mode the family cannot run is ignored with a warning."""
+        from my_conversation_app.config import config
+
+        with caplog.at_level("WARNING", logger="my_conversation_app.dashscope_realtime"):
+            monkeypatch.setattr(config, "DASHSCOPE_REALTIME_MODEL", "qwen-audio-3.0-realtime-plus")
+            monkeypatch.setattr(config, "DASHSCOPE_TURN_DETECTION", "semantic_vad")
+            payload = _sent_session_payload(_connection(), dict(self._APP_SERVER_VAD))
+            assert payload["session"]["turn_detection"] == self._SMART_TURN
+
+            monkeypatch.setattr(config, "DASHSCOPE_REALTIME_MODEL", "qwen3.5-omni-flash-realtime")
+            monkeypatch.setattr(config, "DASHSCOPE_TURN_DETECTION", "smart_turn")
+            payload = _sent_session_payload(_connection(), dict(self._APP_SERVER_VAD))
+            assert payload["session"]["turn_detection"] == self._SEMANTIC_VAD
+
+            monkeypatch.setattr(config, "DASHSCOPE_REALTIME_MODEL", "qwen3-omni-flash-realtime")
+            monkeypatch.setattr(config, "DASHSCOPE_TURN_DETECTION", "semantic_vad")
+            payload = _sent_session_payload(_connection(), dict(self._APP_SERVER_VAD))
+            assert payload["session"]["turn_detection"] == {"type": "server_vad", "interrupt_response": True}
+        assert "semantic_vad is not supported" in caplog.text
+        assert "smart_turn is Qwen-Audio only" in caplog.text
+        assert "only supports server VAD" in caplog.text
+
+    def test_image_turn_restores_semantic_vad(self, monkeypatch):
+        """After the manual image turn the semantic VAD comes back, not the server VAD."""
+        from my_conversation_app.config import config
+
+        monkeypatch.setattr(config, "DASHSCOPE_REALTIME_MODEL", "qwen3.5-omni-flash-realtime")
+        monkeypatch.setattr(config, "DASHSCOPE_TURN_DETECTION", None)
+        conn = _connection()
+        sent: list[str] = []
+
+        class FakeWebsocket:
+            async def send(self, message: str) -> None:
+                sent.append(message)
+
+        conn._connection = FakeWebsocket()  # type: ignore[assignment]
+        asyncio.run(conn.send({"type": "session.update", "session": dict(self._APP_SERVER_VAD)}))
+        asyncio.run(
+            conn.send(
+                {
+                    "type": "conversation.item.create",
+                    "item": {
+                        "type": "message",
+                        "role": "user",
+                        "content": [{"type": "input_image", "image_url": "data:image/jpeg;base64,QUJD"}],
+                    },
+                }
+            )
+        )
+        frames = [json.loads(frame) for frame in sent]
+        assert frames[0]["session"]["turn_detection"] == self._SEMANTIC_VAD
+        assert frames[-1]["session"]["turn_detection"] == self._SEMANTIC_VAD
 
 
 def test_partial_session_update_keeps_tool_aliases():
@@ -347,8 +469,11 @@ class TestImageBufferTranslation:
             },
         }
 
-    def test_camera_image_becomes_image_buffer_events(self):
+    def test_camera_image_becomes_image_buffer_events(self, monkeypatch):
         """A camera image ships via the image buffer inside a manual turn-detection window."""
+        from my_conversation_app.config import config
+
+        monkeypatch.setattr(config, "DASHSCOPE_TURN_DETECTION", "server_vad")
         conn = _connection()
         frames = self._sent_frames(conn, self._camera_item_create("QUJD"))
         assert [frame["type"] for frame in frames] == [
@@ -366,8 +491,12 @@ class TestImageBufferTranslation:
         # The placeholder audio keeps the commit viable while the user is silent.
         assert base64.b64decode(frames[1]["audio"])
 
-    def test_camera_image_restores_configured_turn_detection(self):
+    def test_camera_image_restores_configured_turn_detection(self, monkeypatch):
         """The turn detection from the app's session.update is restored after the image turn."""
+        from my_conversation_app.config import config
+
+        # server_vad keeps the app's payload as-is, so it round-trips untouched.
+        monkeypatch.setattr(config, "DASHSCOPE_TURN_DETECTION", "server_vad")
         conn = _connection()
         configured = {"type": "server_vad", "interrupt_response": True, "threshold": 0.3}
         sent = self._attach_fake_websocket(conn)

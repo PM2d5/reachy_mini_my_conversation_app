@@ -39,6 +39,7 @@ DASHSCOPE_API_KEY=sk-...            # required; from Alibaba Model Studio
 # DASHSCOPE_REALTIME_VOICE="Tina"      # voice lists differ per model family; see .env.example
 # DASHSCOPE_VISION_MODEL="qwen3.8-flash"  # set to caption camera frames via a vision model; unset attaches raw frames
 # DASHSCOPE_CHAT_BASE="https://dashscope.aliyuncs.com/compatible-mode/v1"  # base for those caption calls
+# DASHSCOPE_TURN_DETECTION=semantic_vad   # per-family default (qwen3.5/3.8-omni: semantic_vad, qwen-audio: smart_turn, older omni: server_vad)
 ```
 
 Leave `REALTIME_BACKEND` unset (or `huggingface`) to keep the default backend.

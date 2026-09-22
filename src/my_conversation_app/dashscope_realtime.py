@@ -40,7 +40,7 @@ from openai.resources.realtime.realtime import (
     AsyncRealtimeConnectionManager,
 )
 
-from my_conversation_app.config import config, is_dashscope_audio_realtime_model
+from my_conversation_app.config import config, supports_dashscope_semantic_vad, is_dashscope_audio_realtime_model
 from my_conversation_app.huggingface_realtime import HuggingFaceRealtimeHandler
 
 
@@ -65,6 +65,41 @@ _SHRINK_QUALITY_STEPS = (85, 70, 55)
 
 # Fallback restored after an image turn when no app session.update was seen.
 _DEFAULT_TURN_DETECTION = {"type": "server_vad", "interrupt_response": True}
+
+# Semantic-capable families run a semantic-grade turn detection by default, so
+# backchannels ("嗯", "对对", laughter) and noise no longer cut the model off
+# mid-sentence, only genuine interruptions do. Qwen3.5+ omni understands
+# semantic VAD (threshold and silence window are the documented defaults); the
+# Qwen-Audio family takes smart_turn, which accepts no extra parameters. Older
+# omni generations keep the app's server VAD (see config for why strictness
+# matters here).
+_SEMANTIC_VAD: dict[str, Any] = {"type": "semantic_vad", "threshold": 0.5, "silence_duration_ms": 800}
+_SMART_TURN: dict[str, Any] = {"type": "smart_turn"}
+
+
+def _effective_turn_detection(app_turn_detection: dict[str, Any]) -> dict[str, Any]:
+    """Return the turn detection DashScope should run for this app session.
+
+    Qwen3.5+ omni models default to semantic VAD and the Qwen-Audio family to
+    smart_turn; DASHSCOPE_TURN_DETECTION=server_vad opts back out, and a mode
+    the model family cannot run is ignored with a warning.
+    """
+    model = config.DASHSCOPE_REALTIME_MODEL
+    override = config.DASHSCOPE_TURN_DETECTION
+    if override == "server_vad":
+        return app_turn_detection
+    if is_dashscope_audio_realtime_model(model):
+        if override == "semantic_vad":
+            logger.warning("semantic_vad is not supported by %s; using smart_turn", model)
+        return dict(_SMART_TURN)
+    if not supports_dashscope_semantic_vad(model):
+        if override is not None:
+            logger.warning("%s only supports server VAD; ignoring %s", model, override)
+        return app_turn_detection
+    if override == "smart_turn":
+        logger.warning("smart_turn is Qwen-Audio only; %s keeps semantic_vad", model)
+    return dict(_SEMANTIC_VAD)
+
 
 # DashScope event name -> modern OpenAI realtime event name.
 _EVENT_NAME_MAP = {
@@ -230,7 +265,7 @@ class DashScopeConnection(AsyncRealtimeConnection):
         # garbles long function names (observed duplicated prefixes), so only
         # short aliases travel to the model and call events map back.
         self._tool_aliases: dict[str, str] = {}
-        # Last turn detection the app configured, restored after an image turn.
+        # Turn detection in effect for the app session, restored after an image turn.
         self._app_turn_detection: dict[str, Any] | None = None
 
     def _alias_session_tools(self, session: dict[str, Any]) -> dict[str, Any]:
@@ -270,6 +305,7 @@ class DashScopeConnection(AsyncRealtimeConnection):
                 # it down. DashScope-only: the OpenAI/HF session shape is untouched.
                 normalized["temperature"] = config.DASHSCOPE_TEMPERATURE
             if "turn_detection" in normalized:
+                normalized["turn_detection"] = _effective_turn_detection(normalized["turn_detection"])
                 self._app_turn_detection = normalized["turn_detection"]
             if isinstance(normalized.get("tools"), list):
                 # A full update re-registers the tools; rebuild the alias map.
@@ -347,11 +383,8 @@ class DashScopeConnection(AsyncRealtimeConnection):
                     }
                 )
             )
-        await self._connection.send(
-            self._dashscope_session_payload(
-                {"turn_detection": self._app_turn_detection or dict(_DEFAULT_TURN_DETECTION)}
-            )
-        )
+        restored = self._app_turn_detection or _effective_turn_detection(dict(_DEFAULT_TURN_DETECTION))
+        await self._connection.send(self._dashscope_session_payload({"turn_detection": restored}))
 
     @staticmethod
     def _dashscope_session_payload(session: dict[str, Any]) -> str:

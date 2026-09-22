@@ -68,6 +68,7 @@ DASHSCOPE_REALTIME_MODEL_ENV = "DASHSCOPE_REALTIME_MODEL"
 DASHSCOPE_REALTIME_WS_BASE_ENV = "DASHSCOPE_REALTIME_WS_BASE"
 DASHSCOPE_REALTIME_VOICE_ENV = "DASHSCOPE_REALTIME_VOICE"
 DASHSCOPE_TEMPERATURE_ENV = "DASHSCOPE_TEMPERATURE"
+DASHSCOPE_TURN_DETECTION_ENV = "DASHSCOPE_TURN_DETECTION"
 DASHSCOPE_REALTIME_WS_BASE_DEFAULT = "wss://dashscope.aliyuncs.com/api-ws/v1"
 DASHSCOPE_REALTIME_MODEL_DEFAULT = "qwen3.5-omni-flash-realtime"
 # One credential set for all DashScope calls: the user swaps values when they
@@ -100,6 +101,25 @@ def resolve_dashscope_temperature() -> float | None:
         logger.warning("Ignoring out-of-range %s=%r; using the backend default.", DASHSCOPE_TEMPERATURE_ENV, raw_value)
         return None
     return temperature
+
+
+DASHSCOPE_TURN_DETECTION_MODES = ("server_vad", "semantic_vad", "smart_turn")
+
+
+def resolve_dashscope_turn_detection() -> str | None:
+    """Read the DashScope turn-detection mode; None picks per model family."""
+    mode = (os.getenv(DASHSCOPE_TURN_DETECTION_ENV) or "").strip().lower()
+    if not mode:
+        return None
+    if mode not in DASHSCOPE_TURN_DETECTION_MODES:
+        logger.warning(
+            "Ignoring invalid %s=%r; expected one of %s; using the model default.",
+            DASHSCOPE_TURN_DETECTION_ENV,
+            mode,
+            ", ".join(DASHSCOPE_TURN_DETECTION_MODES),
+        )
+        return None
+    return mode
 
 
 # Qwen3.5-Omni-Realtime voice catalog (Alibaba Model Studio voice list;
@@ -169,6 +189,10 @@ DASHSCOPE_AVAILABLE_VOICES: list[str] = [
 # reject the whole session.update — tools included — so voices must resolve
 # per configured model.
 DASHSCOPE_AUDIO_REALTIME_MODEL_PREFIX = "qwen-audio"
+# semantic_vad is documented for exactly these omni generations; older omni
+# models (qwen3-omni, qwen-omni-turbo) must stay on server VAD, since a rejected
+# turn_detection makes DashScope drop the whole session.update — tools included.
+DASHSCOPE_SEMANTIC_VAD_MODEL_PREFIXES = ("qwen3.5-omni", "qwen3.8-omni")
 DASHSCOPE_AUDIO_REALTIME_VOICES: list[str] = [
     "longanqian",
     "longanlingxin",
@@ -567,6 +591,7 @@ class Config:
     ).rstrip("/")
     DASHSCOPE_REALTIME_VOICE = os.getenv(DASHSCOPE_REALTIME_VOICE_ENV)
     DASHSCOPE_TEMPERATURE = resolve_dashscope_temperature()
+    DASHSCOPE_TURN_DETECTION = resolve_dashscope_turn_detection()
 
     logger.debug(
         "HF mode: %s, HF session URL set: %s, HF direct URL set: %s",
@@ -720,6 +745,12 @@ def get_selected_backend() -> str:
 def is_dashscope_audio_realtime_model(model: str | None) -> bool:
     """Return whether the model belongs to the Qwen-Audio realtime family."""
     return (model or "").strip().lower().startswith(DASHSCOPE_AUDIO_REALTIME_MODEL_PREFIX)
+
+
+def supports_dashscope_semantic_vad(model: str | None) -> bool:
+    """Return whether the omni model generation understands semantic VAD."""
+    normalized = (model or "").strip().lower()
+    return any(normalized.startswith(prefix) for prefix in DASHSCOPE_SEMANTIC_VAD_MODEL_PREFIXES)
 
 
 def _dashscope_voice_catalog() -> list[str]:
