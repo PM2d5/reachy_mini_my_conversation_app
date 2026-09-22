@@ -11,9 +11,11 @@ Translation happens at the connection boundary:
   parts become ``input_image_buffer.append`` + ``input_audio_buffer.commit``,
   the only image path DashScope accepts (it only supports ``function_call_output``
   items); oversized camera JPEGs are re-encoded down first, since DashScope
-  closes the connection on frames above 256 KiB, and because the server VAD
-  only commits images alongside speech, the connection briefly switches to
-  manual turn detection around the image turn;
+  closes the connection on frames above 256 KiB, and because turn detection
+  only commits images alongside speech — and refuses mode changes while input
+  audio is pending — the mic stream is briefly held back, the audio buffer
+  cleared, and the connection switched to manual turn detection around the
+  image turn;
 - incoming event names are mapped to the modern OpenAI realtime names the
   conversation loop expects, confirmed transcript snapshots become
   incremental deltas, and the 24 kHz output audio is resampled to the app's
@@ -23,6 +25,7 @@ Translation happens at the connection boundary:
 import json
 import uuid
 import base64
+import asyncio
 import logging
 from io import BytesIO
 from typing import Any, Mapping
@@ -267,6 +270,13 @@ class DashScopeConnection(AsyncRealtimeConnection):
         self._tool_aliases: dict[str, str] = {}
         # Turn detection in effect for the app session, restored after an image turn.
         self._app_turn_detection: dict[str, Any] | None = None
+        # True while an image turn owns the input buffer; mic audio is dropped so
+        # it cannot re-arm the pending-audio guard that blocks the turn-detection
+        # switch (semantic turn detection holds audio while judging it).
+        self._suppress_input_audio = False
+        # Serializes image turns: two camera results arriving together would
+        # flap the turn-detection mode against each other and both fail.
+        self._image_turn_lock = asyncio.Lock()
 
     def _alias_session_tools(self, session: dict[str, Any]) -> dict[str, Any]:
         """Replace namespaced tool names with short unique aliases."""
@@ -297,6 +307,8 @@ class DashScopeConnection(AsyncRealtimeConnection):
 
     async def send(self, event: RealtimeClientEvent | RealtimeClientEventParam) -> None:
         """Send a client event, flattening session updates for DashScope."""
+        if isinstance(event, dict) and event.get("type") == "input_audio_buffer.append" and self._suppress_input_audio:
+            return
         if isinstance(event, dict) and event.get("type") == "session.update":
             normalized = normalize_session(event.get("session") or {})
             if config.DASHSCOPE_TEMPERATURE is not None:
@@ -335,56 +347,66 @@ class DashScopeConnection(AsyncRealtimeConnection):
         """Append images to the input image buffer and commit them into the conversation.
 
         DashScope only commits the image buffer together with a non-empty audio
-        buffer, and its server VAD discards non-speech audio — a silently
+        buffer, and its turn detection discards non-speech audio — a silently
         waiting user would make the commit fail. So the connection briefly
-        switches to manual turn detection, appends one second of synthetic
-        room noise (only sent to the server, never played on the robot), and
-        restores the app's turn detection once the images are committed.
+        switches to manual turn detection, appends one second of synthetic room
+        noise (only sent to the server, never played on the robot), and restores
+        the app's turn detection once the images are committed. Semantic turn
+        detection refuses mode changes while input audio is pending, so the mic
+        stream is held back and the buffer cleared for the length of the switch.
         """
-        await self._connection.send(self._dashscope_session_payload({"turn_detection": None}))
-        room_noise = np.random.randint(-600, 600, HuggingFaceRealtimeHandler.SAMPLE_RATE, dtype=np.int16)
-        await self._connection.send(
-            json.dumps(
-                {
-                    "type": "input_audio_buffer.append",
-                    "event_id": f"event_{uuid.uuid4().hex}",
-                    "audio": base64.b64encode(room_noise.tobytes()).decode("utf-8"),
-                }
-            )
-        )
-        sent_any_image = False
-        for image_payload in image_payloads:
-            if len(image_payload) > DASHSCOPE_IMAGE_B64_SAFE_BYTES:
-                image_payload = _shrink_image_payload(image_payload)
-            # An oversized frame would get the whole connection closed (1009).
-            if len(image_payload) > DASHSCOPE_IMAGE_B64_SAFE_BYTES:
-                logger.error(
-                    "Dropping camera image of %d bytes: still above DashScope's %d byte frame limit after re-encoding",
-                    len(image_payload),
-                    DASHSCOPE_FRAME_LIMIT_BYTES,
+        async with self._image_turn_lock:
+            self._suppress_input_audio = True
+            try:
+                await self._connection.send(
+                    json.dumps({"type": "input_audio_buffer.clear", "event_id": f"event_{uuid.uuid4().hex}"})
                 )
-                continue
-            await self._connection.send(
-                json.dumps(
-                    {
-                        "type": "input_image_buffer.append",
-                        "event_id": f"event_{uuid.uuid4().hex}",
-                        "image": image_payload,
-                    }
+                await self._connection.send(self._dashscope_session_payload({"turn_detection": None}))
+                room_noise = np.random.randint(-600, 600, HuggingFaceRealtimeHandler.SAMPLE_RATE, dtype=np.int16)
+                await self._connection.send(
+                    json.dumps(
+                        {
+                            "type": "input_audio_buffer.append",
+                            "event_id": f"event_{uuid.uuid4().hex}",
+                            "audio": base64.b64encode(room_noise.tobytes()).decode("utf-8"),
+                        }
+                    )
                 )
-            )
-            sent_any_image = True
-        if sent_any_image:
-            await self._connection.send(
-                json.dumps(
-                    {
-                        "type": "input_audio_buffer.commit",
-                        "event_id": f"event_{uuid.uuid4().hex}",
-                    }
-                )
-            )
-        restored = self._app_turn_detection or _effective_turn_detection(dict(_DEFAULT_TURN_DETECTION))
-        await self._connection.send(self._dashscope_session_payload({"turn_detection": restored}))
+                sent_any_image = False
+                for image_payload in image_payloads:
+                    if len(image_payload) > DASHSCOPE_IMAGE_B64_SAFE_BYTES:
+                        image_payload = _shrink_image_payload(image_payload)
+                    # An oversized frame would get the whole connection closed (1009).
+                    if len(image_payload) > DASHSCOPE_IMAGE_B64_SAFE_BYTES:
+                        logger.error(
+                            "Dropping camera image of %d bytes: still above DashScope's %d byte frame limit after re-encoding",
+                            len(image_payload),
+                            DASHSCOPE_FRAME_LIMIT_BYTES,
+                        )
+                        continue
+                    await self._connection.send(
+                        json.dumps(
+                            {
+                                "type": "input_image_buffer.append",
+                                "event_id": f"event_{uuid.uuid4().hex}",
+                                "image": image_payload,
+                            }
+                        )
+                    )
+                    sent_any_image = True
+                if sent_any_image:
+                    await self._connection.send(
+                        json.dumps(
+                            {
+                                "type": "input_audio_buffer.commit",
+                                "event_id": f"event_{uuid.uuid4().hex}",
+                            }
+                        )
+                    )
+                restored = self._app_turn_detection or _effective_turn_detection(dict(_DEFAULT_TURN_DETECTION))
+                await self._connection.send(self._dashscope_session_payload({"turn_detection": restored}))
+            finally:
+                self._suppress_input_audio = False
 
     @staticmethod
     def _dashscope_session_payload(session: dict[str, Any]) -> str:

@@ -477,19 +477,69 @@ class TestImageBufferTranslation:
         conn = _connection()
         frames = self._sent_frames(conn, self._camera_item_create("QUJD"))
         assert [frame["type"] for frame in frames] == [
+            "input_audio_buffer.clear",
             "session.update",
             "input_audio_buffer.append",
             "input_image_buffer.append",
             "input_audio_buffer.commit",
             "session.update",
         ]
-        # Manual mode for the image turn, then the server VAD restored.
-        assert frames[0]["session"]["turn_detection"] is None
+        # Pending audio is cleared before the manual switch, then the server VAD restored.
+        assert frames[1]["session"]["turn_detection"] is None
         assert frames[-1]["session"]["turn_detection"] == {"type": "server_vad", "interrupt_response": True}
         # The image travels as raw base64, without the data URL prefix.
-        assert frames[2]["image"] == "QUJD"
+        assert frames[3]["image"] == "QUJD"
         # The placeholder audio keeps the commit viable while the user is silent.
-        assert base64.b64decode(frames[1]["audio"])
+        assert base64.b64decode(frames[2]["audio"])
+        # The mic stream resumes once the image turn is over.
+        assert conn._suppress_input_audio is False
+
+    def test_mic_audio_is_dropped_while_an_image_turn_owns_the_buffer(self):
+        """Mic appends during the image turn must not re-arm the pending-audio guard.
+
+        Regression test: with semantic turn detection, pending input audio made
+        DashScope reject the manual-turn-detection switch, so every camera image
+        failed with "Cannot change turn_detection while input audio is pending".
+        """
+        conn = _connection()
+        sent = self._attach_fake_websocket(conn)
+
+        conn._suppress_input_audio = True
+        asyncio.run(conn.send({"type": "input_audio_buffer.append", "audio": "QUJD"}))
+        assert sent == []
+
+        conn._suppress_input_audio = False
+        asyncio.run(conn.send({"type": "input_audio_buffer.append", "audio": "QUJD"}))
+        assert json.loads(sent[0])["type"] == "input_audio_buffer.append"
+
+    def test_parallel_image_turns_do_not_interleave(self):
+        """Concurrent camera results must not flap the turn-detection mode against each other."""
+        conn = _connection()
+        sent: list[str] = []
+
+        class YieldingFakeWebsocket:
+            async def send(self, message: str) -> None:
+                await asyncio.sleep(0)  # give the sibling dance a chance to cut in
+                sent.append(message)
+
+        conn._connection = YieldingFakeWebsocket()  # type: ignore[assignment]
+        item = self._camera_item_create("QUJD")
+
+        async def deliver_two_in_parallel() -> None:
+            await asyncio.gather(conn.send(dict(item)), conn.send(dict(item)))
+
+        asyncio.run(deliver_two_in_parallel())
+        types = [json.loads(frame)["type"] for frame in sent]
+        dance = [
+            "input_audio_buffer.clear",
+            "session.update",
+            "input_audio_buffer.append",
+            "input_image_buffer.append",
+            "input_audio_buffer.commit",
+            "session.update",
+        ]
+        # One complete dance at a time; a restore never lands inside another dance.
+        assert types == dance + dance
 
     def test_camera_image_restores_configured_turn_detection(self, monkeypatch):
         """The turn detection from the app's session.update is restored after the image turn."""
