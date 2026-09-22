@@ -49,7 +49,8 @@ See `.env.example` for the full list.
 
 The `ask_assistant` tool lets the model delegate complex tasks — real-time lookups
 (prices, tickets, opening hours, news), calendar/reminders, family memory questions,
-multi-step planning — to an [OpenClaw](https://openclaw.ai) gateway on the home
+questions about the user's own computer (files, disk, system state), multi-step
+planning — to an [OpenClaw](https://openclaw.ai) gateway on the home
 network. While a query is in flight the mic is muted so bystander chatter never
 triggers a turn, the reply is cleaned of markdown/emoji and relayed faithfully,
 and dangerous requests (delete files, uninstall, send messages, spend money) are
