@@ -378,7 +378,7 @@ class PlayEmotion(Tool):
                     "Compact emotional intent to express. Choose one of the enum values, mapped "
                     "from the user's words: 开心/高兴→happy, 伤心/难过/悲伤→sad, 沮丧/失落→downcast, "
                     "生气/愤怒→angry, 害怕→scared, 焦虑/紧张→anxious, 惊讶→surprised, 震惊→amazed, "
-                    "无聊→bored, 困→sleepy, 累→tired, 点头→yes, 摇头→no, 害羞/尴尬→embarrassed, "
+                    "无聊→bored, 困→sleepy, 累→tired, 同意→yes, 不同意→no, 害羞/尴尬→embarrassed, "
                     "孤独→lonely, 喜爱→loving, 感谢→grateful, 欢迎/问候→welcoming, 再见→goodbye, "
                     "安慰→calming, 放心→relief, 不耐烦→impatient, 兴奋→excited. Use nuanced "
                     "labels like no_sad, no_excited, no_firm, or yes_understanding when plain yes/no "
