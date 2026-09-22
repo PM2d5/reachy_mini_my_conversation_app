@@ -12,7 +12,7 @@ import my_conversation_app.conversation_handler as conv_mod
 import my_conversation_app.huggingface_realtime as hf_mod
 from my_conversation_app.config import config, get_default_voice
 from my_conversation_app.audio.speaker_id import SpeakerMatchOutcome
-from my_conversation_app.face_recognition import SessionIdentity
+from my_conversation_app.face_recognition import SessionIdentity, RecognitionOutcome
 from my_conversation_app.tools.core_tools import ToolDependencies
 from my_conversation_app.tools.play_emotion import PlayEmotion
 from my_conversation_app.huggingface_realtime import HuggingFaceRealtimeHandler
@@ -1019,3 +1019,41 @@ async def test_speech_stop_attributes_a_1_8s_utterance() -> None:
     await _settle_speaker_attribution(handler)
 
     assert deps.current_identity == SessionIdentity(name="老婆", face_id="f_wife", source="voice")
+
+
+@pytest.mark.asyncio
+async def test_late_face_result_cannot_override_a_voice_identity() -> None:
+    """A wake-time face result arriving after a voice attribution keeps the voice.
+
+    The user can start talking the moment they wake the robot; if voice
+    identification lands mid-utterance while the face task is still running,
+    the late face match (whoever dominates the frame) must not steal identity.
+    """
+    deps = ToolDependencies(reachy_mini=MagicMock(), movement_manager=MagicMock())
+
+    class _RacingFaceRecognizer:
+        """Face recognizer whose result lands after a voice attribution did."""
+
+        def __init__(self) -> None:
+            self._deps: ToolDependencies | None = None
+
+        def load_models(self) -> bool:
+            return True
+
+        def recognize(self, frame: Any) -> Any:
+            # The voice attribution lands on the event loop while recognize()
+            # runs in its worker thread — the exact wake-instant race.
+            if self._deps is not None:
+                self._deps.current_identity = SessionIdentity(name="老公", face_id="f_voice", source="voice")
+            return RecognitionOutcome(name="老婆", face_id="f_face", similarity=0.9, face_detected=True)
+
+    racing = _RacingFaceRecognizer()
+    deps.face_recognizer = racing  # type: ignore[assignment]
+    racing._deps = deps
+    handler = HuggingFaceRealtimeHandler(deps)
+    handler.deps.movement_manager.is_moving.return_value = False
+    handler.deps.reachy_mini.media.get_frame.return_value = np.zeros((240, 320, 3), dtype=np.uint8)
+
+    await handler._resolve_session_identity()
+
+    assert deps.current_identity == SessionIdentity(name="老公", face_id="f_voice", source="voice")

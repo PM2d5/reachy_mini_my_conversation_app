@@ -513,8 +513,19 @@ class HuggingFaceRealtimeHandler(ConversationHandler):
                 return
             outcome = await asyncio.to_thread(recognizer.recognize, frame)
             if outcome.name is not None and outcome.face_id is not None:
-                self.deps.current_identity = SessionIdentity(name=outcome.name, face_id=outcome.face_id)
-                logger.info("Session identity: %s (similarity %.3f)", outcome.name, outcome.similarity)
+                current = self.deps.current_identity
+                if current is not None and current.source == "voice":
+                    # A voice attribution that already landed mid-utterance says
+                    # who is SPEAKING; a late face result must not override it
+                    # back to whoever merely dominates the camera frame.
+                    logger.info(
+                        "Session identity: face saw %s; keeping voice-identified %s",
+                        outcome.name,
+                        current.name,
+                    )
+                else:
+                    self.deps.current_identity = SessionIdentity(name=outcome.name, face_id=outcome.face_id)
+                    logger.info("Session identity: %s (similarity %.3f)", outcome.name, outcome.similarity)
             else:
                 logger.info("Session identity: no enrolled match (best similarity %.3f)", outcome.similarity)
         except Exception as exc:

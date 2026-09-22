@@ -205,21 +205,32 @@ class RememberFace(Tool):
         return {"saved": outcome.face.name, "face_id": outcome.face.id, "voice_enrolled": voice_enrolled}
 
     async def _enroll_voice(self, deps: ToolDependencies, face_id: str) -> bool:
-        """Attach the just-spoken utterance's embedding as the person's voice reference."""
+        """Attach the just-spoken utterance's embedding as the person's voice reference.
+
+        Best effort by design: the face enrollment already succeeded, so a voice
+        failure must degrade to voice_enrolled=False instead of erroring the
+        whole tool and making the model deny an enrollment that happened.
+        """
         speaker_recognizer = deps.speaker_recognizer
         last_speech = deps.get_last_user_speech() if deps.get_last_user_speech is not None else None
         if speaker_recognizer is None or last_speech is None or not config.SPEAKER_ID_ENABLED:
             return False
-        sample_rate, samples = last_speech
-        if not await asyncio.to_thread(speaker_recognizer.load_models):
+        try:
+            sample_rate, samples = last_speech
+            if not await asyncio.to_thread(speaker_recognizer.load_models):
+                return False
+            samples_16k = _resample_to_16k(samples, sample_rate)
+            embedding = await asyncio.to_thread(
+                speaker_recognizer.embed_for_enrollment, samples_16k.astype(np.float32) / 32768.0
+            )
+            if embedding is None:
+                return False
+            appended = await asyncio.to_thread(
+                append_voice_embeddings, deps.instance_path, face_id, [embedding.tolist()]
+            )
+        except Exception as exc:
+            logger.warning("Voice enrollment failed for face_id=%s: %s", face_id, exc)
             return False
-        samples_16k = _resample_to_16k(samples, sample_rate)
-        embedding = await asyncio.to_thread(
-            speaker_recognizer.embed_for_enrollment, samples_16k.astype(np.float32) / 32768.0
-        )
-        if embedding is None:
-            return False
-        appended = await asyncio.to_thread(append_voice_embeddings, deps.instance_path, face_id, [embedding.tolist()])
         if appended is not None:
             logger.info("Enrolled voice for %r (face_id=%s)", appended.name, face_id)
         return appended is not None
