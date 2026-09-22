@@ -129,8 +129,9 @@ def format_identity_for_prompt(identity: "SessionIdentity | None") -> str:
     """Return the session-identity fragment, empty for unrecognized users."""
     if identity is None:
         return ""
+    source = "voice recognition" if identity.source == "voice" else "face recognition"
     return (
-        f"The person you are talking to is {identity.name} (confirmed by face recognition). "
+        f"The person you are talking to is {identity.name} (confirmed by {source}). "
         "You know who they are, but do not sprinkle their name through the chat — people "
         "rarely say a friend's name mid-conversation. Use it only to greet them, to call "
         "for their attention, or when the feeling of the moment truly calls for it; most "
@@ -138,6 +139,18 @@ def format_identity_for_prompt(identity: "SessionIdentity | None") -> str:
         "being about them."
     )
 
+
+# Injected as a context item the moment voice identification hands the
+# conversation to a different enrolled person mid-session; the system prompt
+# still names whoever was recognized at session start, so the switch needs its
+# own signal. Same anti-name-spamming anchor as the identity block above.
+SPEAKER_SWITCH_NOTE = (
+    "(System note: the person speaking to you now is {name}, recognized by their "
+    "voice. They are the current user — treat what you remember about them as "
+    "being about them, and use their name only where natural. Do not mention "
+    "this note, voice recognition, or the previous speaker unless the "
+    "conversation calls for it.)"
+)
 
 # Same memoryless-session problem as wake acks: the app rotates these wait-line
 # styles itself. Each entry is a style, not a literal line, so every voicing
@@ -260,7 +273,9 @@ def get_session_instructions(
     if not instructions:
         raise RuntimeError("Default profile has no usable instructions")
 
-    memory_prompt = format_memory_for_prompt(instance_path)
+    memory_prompt = format_memory_for_prompt(
+        instance_path, identity_face_id=identity.face_id if identity is not None else None
+    )
     identity_prompt = format_identity_for_prompt(identity)
     # The vision rule leads the instructions: measured 5/5 camera-tool calls for
     # visual questions with qwen3.5-omni-flash-realtime, vs 3/5 at the tail.

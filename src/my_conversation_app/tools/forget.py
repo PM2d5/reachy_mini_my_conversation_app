@@ -36,7 +36,8 @@ class Forget(Tool):
             logger.warning("forget: empty query")
             return {"error": "query must be a non-empty string"}
 
-        result = forget_memory_fact(deps.instance_path, query=query)
+        owner_id = deps.current_identity.face_id if deps.current_identity is not None else None
+        result = forget_memory_fact(deps.instance_path, query=query, owner_id=owner_id)
         if result.removed is None:
             logger.info("Tool call: forget query=%s no_match", query[:120])
             return {"error": f'no memory matched "{query}"; nothing was removed'}

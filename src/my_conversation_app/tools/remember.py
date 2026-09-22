@@ -44,7 +44,8 @@ class Remember(Tool):
             logger.warning("remember: empty fact")
             return {"error": "fact must be a non-empty string"}
 
-        stored = add_memory_fact(deps.instance_path, fact)
+        owner_id = deps.current_identity.face_id if deps.current_identity is not None else None
+        stored = add_memory_fact(deps.instance_path, fact, owner_id=owner_id)
         if stored is None:
             return {"error": "fact was empty or invalid; nothing was saved"}
 

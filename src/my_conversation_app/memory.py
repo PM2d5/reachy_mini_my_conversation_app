@@ -28,14 +28,20 @@ class MemoryFact:
     id: str
     text: str
     created_at: int
+    # The enrolled person the fact belongs to (face id); None is the shared pool
+    # everyone sees. Absent in stores written before per-person memory.
+    owner_id: str | None = None
 
     def to_json(self) -> dict[str, object]:
         """Return the persisted JSON shape used by the mobile app."""
-        return {
+        payload: dict[str, object] = {
             "id": self.id,
             "text": self.text,
             "createdAt": self.created_at,
         }
+        if self.owner_id is not None:
+            payload["ownerId"] = self.owner_id
+        return payload
 
 
 @dataclass(frozen=True)
@@ -80,6 +86,7 @@ def _fact_from_json(value: object) -> MemoryFact | None:
     fact_id = value.get("id")
     text = value.get("text")
     created_at = value.get("createdAt")
+    owner_id = value.get("ownerId")
 
     if not isinstance(fact_id, str):
         return None
@@ -87,12 +94,14 @@ def _fact_from_json(value: object) -> MemoryFact | None:
         return None
     if not isinstance(created_at, (int, float)):
         return None
+    if owner_id is not None and not isinstance(owner_id, str):
+        return None
 
     normalized = normalize_memory_text(text)
     if not normalized:
         return None
 
-    return MemoryFact(id=fact_id, text=normalized, created_at=int(created_at))
+    return MemoryFact(id=fact_id, text=normalized, created_at=int(created_at), owner_id=owner_id)
 
 
 def _read_memory_file(path: Path) -> list[MemoryFact]:
@@ -148,8 +157,12 @@ def list_memory_facts(instance_path: str | Path | None = None) -> list[MemoryFac
         return list(_read_memory_file(memory_path_for_instance(instance_path)))
 
 
-def add_memory_fact(instance_path: str | Path | None, text: str) -> MemoryFact | None:
-    """Store one short fact, deduplicating exact case-insensitive matches."""
+def add_memory_fact(
+    instance_path: str | Path | None,
+    text: str,
+    owner_id: str | None = None,
+) -> MemoryFact | None:
+    """Store one short fact, deduplicating exact case-insensitive matches per owner."""
     normalized = normalize_memory_text(text)
     if not normalized:
         return None
@@ -157,21 +170,37 @@ def add_memory_fact(instance_path: str | Path | None, text: str) -> MemoryFact |
     path = memory_path_for_instance(instance_path)
     with _STORE_LOCK:
         facts = _read_memory_file(path)
-        existing = next((fact for fact in facts if fact.text.lower() == normalized.lower()), None)
+        existing = next(
+            (fact for fact in facts if fact.text.lower() == normalized.lower() and fact.owner_id == owner_id),
+            None,
+        )
         if existing is not None:
             return existing
 
-        fact = MemoryFact(id=_make_id(), text=normalized, created_at=_now_ms())
+        fact = MemoryFact(id=_make_id(), text=normalized, created_at=_now_ms(), owner_id=owner_id)
         _write_memory_file(path, [fact, *facts][:MAX_FACTS])
         return fact
+
+
+def _visible_facts(facts: list[MemoryFact], owner_id: str | None) -> list[MemoryFact]:
+    """Show an identified person their own facts plus the shared pool."""
+    if owner_id is None:
+        return facts
+    return [fact for fact in facts if fact.owner_id in (owner_id, None)]
 
 
 def forget_memory_fact(
     instance_path: str | Path | None,
     *,
     query: str | None = None,
+    owner_id: str | None = None,
 ) -> ForgetMemoryResult:
-    """Remove a fact by case-insensitive substring query."""
+    """Remove a fact by case-insensitive substring query.
+
+    An identified person's query first searches their own and shared facts;
+    with no hit there it falls back to everything, so a misattributed fact
+    stays recoverable instead of unforgettable.
+    """
     path = memory_path_for_instance(instance_path)
     with _STORE_LOCK:
         facts = _read_memory_file(path)
@@ -180,7 +209,9 @@ def forget_memory_fact(
         if not normalized_query:
             return ForgetMemoryResult(removed=None, candidates=())
 
-        candidates = tuple(fact for fact in facts if normalized_query in fact.text.lower())
+        candidates = tuple(fact for fact in _visible_facts(facts, owner_id) if normalized_query in fact.text.lower())
+        if not candidates and owner_id is not None:
+            candidates = tuple(fact for fact in facts if normalized_query in fact.text.lower())
         if not candidates:
             return ForgetMemoryResult(removed=None, candidates=())
 
@@ -196,9 +227,16 @@ def clear_memory_facts(instance_path: str | Path | None = None) -> None:
         _write_memory_file(path, [])
 
 
-def format_memory_for_prompt(instance_path: str | Path | None = None) -> str:
-    """Return the prompt fragment injected before the session instructions."""
-    facts = list_memory_facts(instance_path)
+def format_memory_for_prompt(
+    instance_path: str | Path | None = None,
+    identity_face_id: str | None = None,
+) -> str:
+    """Return the prompt fragment injected before the session instructions.
+
+    An identified person gets their own facts plus the shared pool; an
+    unidentified session sees everything, as it always did.
+    """
+    facts = _visible_facts(list_memory_facts(instance_path), identity_face_id)
     if not facts:
         return ""
 

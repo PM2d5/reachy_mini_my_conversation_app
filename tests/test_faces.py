@@ -8,12 +8,14 @@ import pytest
 from my_conversation_app.faces import (
     MAX_FACES,
     MAX_EMBEDDINGS_PER_FACE,
+    MAX_VOICE_EMBEDDINGS_PER_FACE,
     enroll_face,
     mark_face_seen,
     list_enrolled_faces,
     normalize_face_name,
     remove_enrolled_face,
     rename_enrolled_face,
+    append_voice_embeddings,
     faces_path_for_instance,
 )
 
@@ -131,3 +133,64 @@ def test_mark_face_seen_updates_timestamp_and_grows_references(tmp_path: Path) -
 
     mark_face_seen(tmp_path, "missing", [1.0])
     assert len(list_enrolled_faces(tmp_path)) == 1
+
+
+def test_append_voice_embeddings_roundtrip_and_backward_compat(tmp_path: Path) -> None:
+    """Voice references persist under voiceEmbeddings; old stores read back empty."""
+    enrolled = enroll_face(tmp_path, "凯蕾", [[1.0, 0.0]])
+    assert enrolled.face is not None
+
+    assert append_voice_embeddings(tmp_path, enrolled.face.id, [[0.5, 0.5], []]) is not None
+    raw = json.loads(faces_path_for_instance(tmp_path).read_text(encoding="utf-8"))
+    assert raw["faces"][0]["voiceEmbeddings"] == [[0.5, 0.5]]
+
+    assert list_enrolled_faces(tmp_path)[0].voice_embeddings == ((0.5, 0.5),)
+
+    # A pre-voice store (no voiceEmbeddings key) still loads, with no references.
+    faces_path_for_instance(tmp_path).write_text(
+        json.dumps(
+            {
+                "version": 1,
+                "faces": [
+                    {"id": "f_old", "name": "旧数据", "embeddings": [[0.9, 0.1]], "createdAt": 1, "lastSeenAt": 2},
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+    assert list_enrolled_faces(tmp_path)[0].voice_embeddings == ()
+
+
+def test_append_voice_embeddings_caps_and_ignores_unknown_face(tmp_path: Path) -> None:
+    """Newest voice references win at the cap; unknown face ids change nothing."""
+    enrolled = enroll_face(tmp_path, "凯蕾", [[1.0, 0.0]])
+    assert enrolled.face is not None
+    face_id = enrolled.face.id
+
+    for index in range(MAX_VOICE_EMBEDDINGS_PER_FACE + 2):
+        assert append_voice_embeddings(tmp_path, face_id, [[float(index), 1.0]]) is not None
+
+    voices = list_enrolled_faces(tmp_path)[0].voice_embeddings
+    assert len(voices) == MAX_VOICE_EMBEDDINGS_PER_FACE
+    assert voices[0] == (2.0, 1.0)  # the two oldest references fell off the cap
+    assert voices[-1] == (float(MAX_VOICE_EMBEDDINGS_PER_FACE + 1), 1.0)
+
+    assert append_voice_embeddings(tmp_path, "missing", [[0.1, 0.2]]) is None
+    assert append_voice_embeddings(tmp_path, face_id, [[]]) is None
+
+
+def test_rename_and_mark_face_seen_keep_voice_embeddings(tmp_path: Path) -> None:
+    """Face-only updates must not drop the attached voice references."""
+    enrolled = enroll_face(tmp_path, "凯蕾", [[1.0, 0.0]])
+    assert enrolled.face is not None
+    face_id = enrolled.face.id
+    assert append_voice_embeddings(tmp_path, face_id, [[0.5, 0.5]]) is not None
+
+    renamed = rename_enrolled_face(tmp_path, face_id, "凯磊")
+    assert renamed is not None
+    assert renamed.voice_embeddings == ((0.5, 0.5),)
+
+    mark_face_seen(tmp_path, face_id, [0.9, 0.1])
+    updated = list_enrolled_faces(tmp_path)[0]
+    assert updated.name == "凯磊"
+    assert updated.voice_embeddings == ((0.5, 0.5),)

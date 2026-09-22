@@ -15,6 +15,7 @@ logger = logging.getLogger(__name__)
 SCHEMA_VERSION = 1
 MAX_FACES = 10
 MAX_EMBEDDINGS_PER_FACE = 5
+MAX_VOICE_EMBEDDINGS_PER_FACE = 5
 MAX_NAME_CHARS = 24
 FACES_FILENAME = "faces.v1.json"
 
@@ -23,23 +24,30 @@ _STORE_LOCK = threading.Lock()
 
 @dataclass(frozen=True)
 class EnrolledFace:
-    """One enrolled person: a name plus face-embedding references."""
+    """One enrolled person: a name plus face and voice embedding references."""
 
     id: str
     name: str
     embeddings: tuple[tuple[float, ...], ...]
     created_at: int
     last_seen_at: int
+    voice_embeddings: tuple[tuple[float, ...], ...] = ()
 
     def to_json(self) -> dict[str, object]:
         """Return the persisted JSON shape."""
-        return {
+        payload: dict[str, object] = {
             "id": self.id,
             "name": self.name,
             "embeddings": [[round(value, 4) for value in embedding] for embedding in self.embeddings],
             "createdAt": self.created_at,
             "lastSeenAt": self.last_seen_at,
         }
+        # Kept out entirely for face-only people so the pre-voice shape lives on.
+        if self.voice_embeddings:
+            payload["voiceEmbeddings"] = [
+                [round(value, 4) for value in embedding] for embedding in self.voice_embeddings
+            ]
+        return payload
 
 
 @dataclass(frozen=True)
@@ -74,6 +82,23 @@ def _now_ms() -> int:
     return int(time.time() * 1000)
 
 
+def _embeddings_from_json(value: object, cap: int) -> tuple[tuple[float, ...], ...] | None:
+    """Parse one embedding list field; None marks a malformed one."""
+    if not isinstance(value, list):
+        return ()
+    embeddings: list[tuple[float, ...]] = []
+    for embedding_value in value:
+        if not isinstance(embedding_value, Sequence) or isinstance(embedding_value, (str, bytes)):
+            return None
+        try:
+            embeddings.append(tuple(float(component) for component in embedding_value))
+        except (TypeError, ValueError):
+            return None
+    if not all(embedding for embedding in embeddings):
+        return None
+    return tuple(embeddings[:cap])
+
+
 def _face_from_json(value: object) -> EnrolledFace | None:
     if not isinstance(value, Mapping):
         return None
@@ -81,6 +106,7 @@ def _face_from_json(value: object) -> EnrolledFace | None:
     face_id = value.get("id")
     name = value.get("name")
     embeddings_value = value.get("embeddings")
+    voice_embeddings_value = value.get("voiceEmbeddings")
     created_at = value.get("createdAt")
     last_seen_at = value.get("lastSeenAt")
 
@@ -91,15 +117,12 @@ def _face_from_json(value: object) -> EnrolledFace | None:
     if not isinstance(created_at, (int, float)) or not isinstance(last_seen_at, (int, float)):
         return None
 
-    embeddings: list[tuple[float, ...]] = []
-    for embedding_value in embeddings_value:
-        if not isinstance(embedding_value, Sequence) or isinstance(embedding_value, (str, bytes)):
-            return None
-        try:
-            embeddings.append(tuple(float(component) for component in embedding_value))
-        except (TypeError, ValueError):
-            return None
-    if not all(embedding for embedding in embeddings):
+    embeddings = _embeddings_from_json(embeddings_value, MAX_EMBEDDINGS_PER_FACE)
+    if embeddings is None:
+        return None
+    # voiceEmbeddings is absent in stores written before voice enrollment existed.
+    voice_embeddings = _embeddings_from_json(voice_embeddings_value, MAX_VOICE_EMBEDDINGS_PER_FACE)
+    if voice_embeddings is None:
         return None
 
     normalized = normalize_face_name(name)
@@ -109,9 +132,10 @@ def _face_from_json(value: object) -> EnrolledFace | None:
     return EnrolledFace(
         id=face_id,
         name=normalized,
-        embeddings=tuple(embeddings[:MAX_EMBEDDINGS_PER_FACE]),
+        embeddings=embeddings,
         created_at=int(created_at),
         last_seen_at=int(last_seen_at),
+        voice_embeddings=voice_embeddings,
     )
 
 
@@ -218,6 +242,7 @@ def rename_enrolled_face(instance_path: str | Path | None, face_id: str, name: s
             embeddings=renamed[0].embeddings,
             created_at=renamed[0].created_at,
             last_seen_at=renamed[0].last_seen_at,
+            voice_embeddings=renamed[0].voice_embeddings,
         )
         _write_faces_file(path, [updated if face.id == face_id else face for face in faces])
         return updated
@@ -263,6 +288,42 @@ def mark_face_seen(
                     embeddings=embeddings,
                     created_at=face.created_at,
                     last_seen_at=_now_ms(),
+                    voice_embeddings=face.voice_embeddings,
                 )
             )
         _write_faces_file(path, updated_faces)
+
+
+def append_voice_embeddings(
+    instance_path: str | Path | None,
+    face_id: str,
+    embeddings: Sequence[Sequence[float]],
+) -> EnrolledFace | None:
+    """Attach voice references to an enrolled person, newest kept at the cap."""
+    clean = [tuple(float(value) for value in embedding) for embedding in embeddings if len(embedding) > 0]
+    if not clean:
+        return None
+
+    path = faces_path_for_instance(instance_path)
+    with _STORE_LOCK:
+        faces = _read_faces_file(path)
+        updated: EnrolledFace | None = None
+        updated_faces: list[EnrolledFace] = []
+        for face in faces:
+            if face.id != face_id:
+                updated_faces.append(face)
+                continue
+            voice_embeddings = (*face.voice_embeddings, *clean)[-MAX_VOICE_EMBEDDINGS_PER_FACE:]
+            updated = EnrolledFace(
+                id=face.id,
+                name=face.name,
+                embeddings=face.embeddings,
+                created_at=face.created_at,
+                last_seen_at=face.last_seen_at,
+                voice_embeddings=voice_embeddings,
+            )
+            updated_faces.append(updated)
+        if updated is None:
+            return None
+        _write_faces_file(path, updated_faces)
+        return updated

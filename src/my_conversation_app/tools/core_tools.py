@@ -12,11 +12,15 @@ from typing import TYPE_CHECKING, Any, Dict, List, Literal, Callable, ClassVar, 
 from pathlib import Path
 from dataclasses import dataclass
 
+import numpy as np
+from numpy.typing import NDArray
+
 from reachy_mini import ReachyMini
 from my_conversation_app.config import config, list_tool_module_names
 from my_conversation_app.mcp_client import McpToolTimeoutError, McpToolInvocationError
 from my_conversation_app.tool_spaces import build_remote_client, read_installed_tool_spaces
 from my_conversation_app.profile_store import DEFAULT_PROFILE_NAME
+from my_conversation_app.audio.speaker_id import SpeakerRecognitionService
 from my_conversation_app.face_recognition import SessionIdentity, FaceRecognitionService
 from my_conversation_app.profile_toolsets import read_profile_tool_names
 from my_conversation_app.tools.tool_constants import SystemTool
@@ -49,6 +53,10 @@ class ToolDependencies:
     # Real types, not forward refs: pydantic resolves ToolDependencies when it
     # validates ToolCallRoutine, and quoted names would be unresolvable here.
     face_recognizer: FaceRecognitionService | None = None
+    speaker_recognizer: SpeakerRecognitionService | None = None
+    # The conversation loop installs this so remember_face can enroll the voice
+    # of the very utterance that asked to be remembered (16 kHz int16 mono).
+    get_last_user_speech: Callable[[], tuple[int, NDArray[np.int16]] | None] | None = None
     current_identity: SessionIdentity | None = None
 
 

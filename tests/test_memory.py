@@ -120,3 +120,70 @@ def test_prompt_includes_identity_fragment_for_known_user(tmp_path: Path, monkey
     # The fragment must anchor the model against saying the name every reply.
     assert "no name at all" in with_identity
     assert "凯蕾" not in without_identity
+
+
+def test_memory_owner_scopes_facts_per_person(tmp_path: Path) -> None:
+    """Facts land in the owner's pool; the prompt shows own plus shared only."""
+    clear_memory_facts(tmp_path)
+    add_memory_fact(tmp_path, "凯蕾喜欢喝咖啡", owner_id="f_kailei")
+    add_memory_fact(tmp_path, "老婆喜欢喝奶茶", owner_id="f_wife")
+    add_memory_fact(tmp_path, "家里养了一只猫")
+
+    kailei_view = format_memory_for_prompt(tmp_path, identity_face_id="f_kailei")
+    assert "凯蕾喜欢喝咖啡" in kailei_view
+    assert "家里养了一只猫" in kailei_view
+    assert "老婆喜欢喝奶茶" not in kailei_view
+
+    wife_view = format_memory_for_prompt(tmp_path, identity_face_id="f_wife")
+    assert "老婆喜欢喝奶茶" in wife_view
+    assert "凯蕾喜欢喝咖啡" not in wife_view
+
+    # A guest session still sees everything, as it always did.
+    guest_view = format_memory_for_prompt(tmp_path)
+    assert "凯蕾喜欢喝咖啡" in guest_view
+    assert "老婆喜欢喝奶茶" in guest_view
+
+
+def test_memory_owner_dedupes_within_owner_only(tmp_path: Path) -> None:
+    """The same text may exist for two owners without collapsing into one."""
+    clear_memory_facts(tmp_path)
+    first = add_memory_fact(tmp_path, "Likes hiking", owner_id="f_kailei")
+    other = add_memory_fact(tmp_path, "Likes hiking", owner_id="f_wife")
+
+    assert first is not None and other is not None
+    assert first.id != other.id
+
+
+def test_forget_searches_own_pool_first_then_falls_back(tmp_path: Path) -> None:
+    """An identified person's forget hits their facts first, anything on fallback."""
+    clear_memory_facts(tmp_path)
+    add_memory_fact(tmp_path, "凯蕾的旧手机号", owner_id="f_kailei")
+    add_memory_fact(tmp_path, "老婆的旧手机号", owner_id="f_wife")
+
+    scoped_hit = forget_memory_fact(tmp_path, query="旧手机号", owner_id="f_wife")
+    assert scoped_hit.removed is not None
+    assert scoped_hit.removed.owner_id == "f_wife"
+
+    # No hit in the wife's own pool, so the query falls through to everything:
+    # a fact saved under the wrong owner stays recoverable.
+    fallback = forget_memory_fact(tmp_path, query="凯蕾", owner_id="f_wife")
+    assert fallback.removed is not None
+    assert fallback.removed.owner_id == "f_kailei"
+
+
+def test_memory_json_keeps_owner_roundtrip(tmp_path: Path) -> None:
+    """OwnerId persists camelCase for the mobile app; old facts stay shared."""
+    clear_memory_facts(tmp_path)
+    stored = add_memory_fact(tmp_path, "凯蕾喜欢喝咖啡", owner_id="f_kailei")
+    assert stored is not None
+
+    raw = json.loads(memory_path_for_instance(tmp_path).read_text(encoding="utf-8"))
+    assert raw["facts"][0]["ownerId"] == "f_kailei"
+
+    # Pre-owner facts (no ownerId) read back as the shared pool.
+    raw["facts"].append({"id": "m_old", "text": "家里养了一只猫", "createdAt": 1})
+    memory_path_for_instance(tmp_path).write_text(json.dumps(raw), encoding="utf-8")
+
+    facts = list_memory_facts(tmp_path)
+    owners = {fact.text: fact.owner_id for fact in facts}
+    assert owners["家里养了一只猫"] is None

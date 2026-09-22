@@ -370,6 +370,28 @@ def resolve_face_match_threshold() -> float:
     return min(max(threshold, 0.0), 1.0)
 
 
+SPEAKER_ID_ENABLED_ENV = "REACHY_MINI_SPEAKER_ID_ENABLED"
+SPEAKER_MATCH_THRESHOLD_ENV = "REACHY_MINI_SPEAKER_MATCH_THRESHOLD"
+# Measured with the bundled CAM++ model on clean speech: same speaker across
+# texts lands 0.7+, different speakers average 0.3–0.5 (worst case, two similar
+# voices reading the same text, 0.69). 0.6 sits in the gap; high-margin matches
+# keep tightening each person's reference set.
+DEFAULT_SPEAKER_MATCH_THRESHOLD = 0.60
+
+
+def resolve_speaker_match_threshold() -> float:
+    """Read the speaker-identification cosine match threshold (0..1)."""
+    raw_value = (os.getenv(SPEAKER_MATCH_THRESHOLD_ENV) or "").strip()
+    if not raw_value:
+        return DEFAULT_SPEAKER_MATCH_THRESHOLD
+    try:
+        threshold = float(raw_value)
+    except ValueError:
+        logger.warning("Ignoring invalid %s=%r; using default.", SPEAKER_MATCH_THRESHOLD_ENV, raw_value)
+        return DEFAULT_SPEAKER_MATCH_THRESHOLD
+    return min(max(threshold, 0.0), 1.0)
+
+
 def _normalize_goodbye_keywords(value: str | None) -> tuple[str, ...]:
     """Parse the comma-separated goodbye keywords that end active listening."""
     keywords = tuple(item.strip().lower() for item in (value or "").split(",") if item.strip())
@@ -614,6 +636,8 @@ class Config:
     GOODBYE_KEYWORDS = _normalize_goodbye_keywords(os.getenv(GOODBYE_KEYWORDS_ENV))
     FACE_RECOGNITION_ENABLED = _env_flag(FACE_RECOGNITION_ENABLED_ENV, default=True)
     FACE_MATCH_THRESHOLD = resolve_face_match_threshold()
+    SPEAKER_ID_ENABLED = _env_flag(SPEAKER_ID_ENABLED_ENV, default=True)
+    SPEAKER_MATCH_THRESHOLD = resolve_speaker_match_threshold()
     OPENCLAW_API_URL = (os.getenv(OPENCLAW_API_URL_ENV) or "").strip()
     OPENCLAW_API_TOKEN = os.getenv(OPENCLAW_API_TOKEN_ENV)
     OPENCLAW_TIMEOUT_S = resolve_openclaw_timeout_s()
@@ -732,6 +756,8 @@ def refresh_runtime_config_from_env() -> None:
     config.GOODBYE_KEYWORDS = _normalize_goodbye_keywords(os.getenv(GOODBYE_KEYWORDS_ENV))
     config.FACE_RECOGNITION_ENABLED = _env_flag(FACE_RECOGNITION_ENABLED_ENV, default=True)
     config.FACE_MATCH_THRESHOLD = resolve_face_match_threshold()
+    config.SPEAKER_ID_ENABLED = _env_flag(SPEAKER_ID_ENABLED_ENV, default=True)
+    config.SPEAKER_MATCH_THRESHOLD = resolve_speaker_match_threshold()
     config.OPENCLAW_API_URL = (os.getenv(OPENCLAW_API_URL_ENV) or "").strip()
     config.OPENCLAW_API_TOKEN = os.getenv(OPENCLAW_API_TOKEN_ENV)
     config.OPENCLAW_TIMEOUT_S = resolve_openclaw_timeout_s()

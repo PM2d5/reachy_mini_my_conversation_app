@@ -6,7 +6,11 @@ import asyncio
 import logging
 from typing import Any, Dict
 
+import numpy as np
+
+from my_conversation_app.faces import append_voice_embeddings
 from my_conversation_app.config import config
+from my_conversation_app.audio.wake_word import _resample_to_16k
 from my_conversation_app.tools.core_tools import Tool, ToolDependencies
 
 
@@ -129,13 +133,13 @@ class RememberFace(Tool):
 
     name = "remember_face"
     description = (
-        "Register the FACE of the person talking to you, so later conversations greet them "
-        "by name. Call this only when the user explicitly asks you to remember THEM "
-        "personally AND gives their name — e.g. 我叫凯蕾，记住我 / remember me, my name is "
-        "Anna. If they only say 记住我 without a name, ask for their name first, then call "
-        "this. For facts, preferences, or events use the `remember` tool instead — this "
-        "tool is only for WHO the person is. Recognition afterwards is automatic; never "
-        "call this to identify someone."
+        "Register the FACE and VOICE of the person talking to you, so later conversations "
+        "greet them by name and recognize who is speaking. Call this only when the user "
+        "explicitly asks you to remember THEM personally AND gives their name — e.g. "
+        "我叫凯蕾，记住我 / remember me, my name is Anna. If they only say 记住我 without a "
+        "name, ask for their name first, then call this. For facts, preferences, or events "
+        "use the `remember` tool instead — this tool is only for WHO the person is. "
+        "Recognition afterwards is automatic; never call this to identify someone."
     )
     parameters_schema = {
         "type": "object",
@@ -197,4 +201,25 @@ class RememberFace(Tool):
             logger.warning("Face enrollment for %r failed: %s", name, reason)
             return {"error": _ENROLLMENT_ERRORS.get(reason, f"enrollment failed ({reason})")}
         RememberFace._last_enrollment = (outcome.face.name, time.monotonic())
-        return {"saved": outcome.face.name, "face_id": outcome.face.id}
+        voice_enrolled = await self._enroll_voice(deps, outcome.face.id)
+        return {"saved": outcome.face.name, "face_id": outcome.face.id, "voice_enrolled": voice_enrolled}
+
+    async def _enroll_voice(self, deps: ToolDependencies, face_id: str) -> bool:
+        """Attach the just-spoken utterance's embedding as the person's voice reference."""
+        speaker_recognizer = deps.speaker_recognizer
+        last_speech = deps.get_last_user_speech() if deps.get_last_user_speech is not None else None
+        if speaker_recognizer is None or last_speech is None or not config.SPEAKER_ID_ENABLED:
+            return False
+        sample_rate, samples = last_speech
+        if not await asyncio.to_thread(speaker_recognizer.load_models):
+            return False
+        samples_16k = _resample_to_16k(samples, sample_rate)
+        embedding = await asyncio.to_thread(
+            speaker_recognizer.embed_for_enrollment, samples_16k.astype(np.float32) / 32768.0
+        )
+        if embedding is None:
+            return False
+        appended = await asyncio.to_thread(append_voice_embeddings, deps.instance_path, face_id, [embedding.tolist()])
+        if appended is not None:
+            logger.info("Enrolled voice for %r (face_id=%s)", appended.name, face_id)
+        return appended is not None

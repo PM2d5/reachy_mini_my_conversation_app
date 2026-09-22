@@ -182,3 +182,68 @@ def test_matcher_extracts_names(transcript: str) -> None:
 def test_matcher_ignores_non_enrollments(transcript: str) -> None:
     """Bare commands without a name, facts, and unrelated text never trigger."""
     assert match_face_enrollment_command(transcript) is None
+
+
+class FakeSpeakerRecognizer:
+    """Stands in for SpeakerRecognitionService with a fixed enrollment embedding."""
+
+    def __init__(self, embedding: np.ndarray) -> None:
+        """Store the canned embedding for every embed_for_enrollment call."""
+        self._embedding = embedding
+        self.enrolled_samples: list[np.ndarray] = []
+
+    def load_models(self) -> bool:
+        """Report the fake service as ready."""
+        return True
+
+    def embed_for_enrollment(self, samples: np.ndarray) -> np.ndarray:
+        """Record the call and return the canned embedding."""
+        self.enrolled_samples.append(samples)
+        return self._embedding
+
+
+@pytest.mark.asyncio
+async def test_remember_face_enrolls_the_utterances_voice(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """A successful face enrollment attaches the just-spoken utterance as voiceprint."""
+    appended: list[tuple[object, str, list[list[float]]]] = []
+    monkeypatch.setattr(
+        remember_face_mod,
+        "append_voice_embeddings",
+        lambda instance, face_id, embeddings: (
+            appended.append((instance, face_id, embeddings))
+            or EnrolledFace(id=face_id, name="凯蕾", embeddings=(), created_at=1, last_seen_at=1)
+        ),
+    )
+    recognizer = FakeRecognizer(_ok_outcome())
+    speaker = FakeSpeakerRecognizer(np.array([0.25, 1.0], dtype=np.float32))
+    deps = _deps(recognizer)
+    deps.instance_path = tmp_path
+    deps.speaker_recognizer = speaker  # type: ignore[assignment]
+    utterance = np.ones(32000, dtype=np.int16)  # 2 s at 16 kHz
+    deps.get_last_user_speech = lambda: (16000, utterance)
+
+    result = await RememberFace()(deps, name="凯蕾")
+
+    assert result["voice_enrolled"] is True
+    assert appended == [(tmp_path, "f_1", [[0.25, 1.0]])]
+    assert speaker.enrolled_samples[0].shape == (32000,)
+
+
+@pytest.mark.asyncio
+async def test_remember_face_skips_voice_when_utterance_missing(tmp_path: Path) -> None:
+    """No captured utterance or no speaker service means voice_enrolled is False."""
+    recognizer = FakeRecognizer(_ok_outcome())
+    speaker = FakeSpeakerRecognizer(np.array([0.25, 1.0], dtype=np.float32))
+
+    no_speech = _deps(recognizer)
+    no_speech.instance_path = tmp_path
+    no_speech.speaker_recognizer = speaker  # type: ignore[assignment]
+    no_speech.get_last_user_speech = lambda: None
+    assert (await RememberFace()(no_speech, name="凯蕾"))["voice_enrolled"] is False
+
+    RememberFace._last_enrollment = None  # the 60 s dedupe window spans the test
+    no_service = _deps(recognizer)
+    no_service.instance_path = tmp_path
+    no_service.get_last_user_speech = lambda: (16000, np.ones(32000, dtype=np.int16))
+    assert (await RememberFace()(no_service, name="凯蕾"))["voice_enrolled"] is False
+    assert speaker.enrolled_samples == []

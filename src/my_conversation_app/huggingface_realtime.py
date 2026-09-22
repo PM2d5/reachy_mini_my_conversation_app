@@ -39,6 +39,7 @@ from my_conversation_app.config import (
     get_hf_connection_selection,
 )
 from my_conversation_app.prompts import (
+    SPEAKER_SWITCH_NOTE,
     WAKE_ACKNOWLEDGEMENT_PROMPTS,
     ASSISTANT_RESULT_RELAY_PROMPT,
     ASSISTANT_WAIT_ACKNOWLEDGEMENT_PROMPTS,
@@ -49,6 +50,8 @@ from my_conversation_app.prompts import (
 )
 from my_conversation_app.streaming import AdditionalOutputs, audio_to_int16
 from my_conversation_app.vision_relay import describe_camera_frame
+from my_conversation_app.audio.wake_word import _resample_to_16k
+from my_conversation_app.audio.speaker_id import SPEAKER_SAMPLE_RATE
 from my_conversation_app.face_recognition import SessionIdentity
 from my_conversation_app.tools.core_tools import (
     ToolSpec,
@@ -81,6 +84,13 @@ _IDENTITY_SETTLE_POLL_S: Final[float] = 0.05
 # Recognition runs while the connection and head-lift animate; past this the
 # session builds as a guest rather than stalling the wake acknowledgement.
 _IDENTITY_RESOLVE_TIMEOUT_S: Final[float] = 3.0
+# Voice attribution fires this far into an utterance so the identity lands
+# before the server generates the turn's response — the robot answers the very
+# turn that switched speakers with the right name.
+_SPEAKER_EARLY_ATTRIBUTE_S: Final[float] = 2.0
+# Shorter than this and the utterance is not attributed at all (the service
+# enforces its own minimum after resampling; this only avoids a doomed task).
+_SPEAKER_MIN_ATTRIBUTE_S: Final[float] = 1.5
 
 
 class InputTranscriptChunksByItem(BaseModel):
@@ -192,6 +202,18 @@ class HuggingFaceRealtimeHandler(ConversationHandler):
         # Call ids of tools that must be waited out in silence (ask_assistant):
         # mic audio is dropped while one runs, so bystander speech never triggers a turn.
         self._silent_wait_call_ids: set[str] = set()
+        # Per-utterance speaker-id state: capture between the server VAD's
+        # speech_started/stopped events, attribute once per utterance.
+        self._capturing_user_speech = False
+        self._user_speech_chunks: list[NDArray[np.int16]] = []
+        self._user_speech_samples = 0
+        self._speaker_attributed = False
+        self._input_sample_rate = SPEAKER_SAMPLE_RATE
+        self._last_user_speech: tuple[int, NDArray[np.int16]] | None = None
+        self._speaker_id_task: asyncio.Task[None] | None = None
+        # The remember_face tool enrolls the voice of the utterance that asked
+        # to be remembered; the loop is the only place that audio exists.
+        deps.get_last_user_speech = self._get_last_user_speech
 
     def _camera_frame_needs_captioning(self) -> bool:
         """Return whether camera frames must be captioned by a vision chat model."""
@@ -995,6 +1017,71 @@ class HuggingFaceRealtimeHandler(ConversationHandler):
         )
         logger.info("Local face-enrollment trigger: name=%s", name)
 
+    def _get_last_user_speech(self) -> tuple[int, NDArray[np.int16]] | None:
+        """Return (sample_rate, samples) of the last completed user utterance."""
+        return self._last_user_speech
+
+    def _begin_user_speech_capture(self) -> None:
+        """Start buffering mic audio for the utterance the server VAD just opened."""
+        self._capturing_user_speech = True
+        self._user_speech_chunks = []
+        self._user_speech_samples = 0
+        self._speaker_attributed = False
+
+    def _end_user_speech_capture(self) -> None:
+        """Close the utterance buffer and attribute a not-yet-decided speaker."""
+        self._capturing_user_speech = False
+        if not self._user_speech_chunks:
+            return
+        segment = np.concatenate(self._user_speech_chunks)
+        self._last_user_speech = (self._input_sample_rate, segment)
+        if not self._speaker_attributed and segment.size >= int(self._input_sample_rate * _SPEAKER_MIN_ATTRIBUTE_S):
+            self._speaker_attributed = True
+            self._schedule_speaker_attribution(segment)
+
+    def _schedule_speaker_attribution(self, samples: NDArray[np.int16]) -> None:
+        """Identify the speaker of one utterance snapshot; never blocks the loop."""
+        self._speaker_id_task = asyncio.create_task(self._attribute_speaker(samples), name="speaker-identification")
+
+    async def _attribute_speaker(self, samples: NDArray[np.int16]) -> None:
+        """Switch the session identity when the utterance belongs to someone else."""
+        recognizer = self.deps.speaker_recognizer
+        if recognizer is None or not config.SPEAKER_ID_ENABLED:
+            return
+        try:
+            if not await asyncio.to_thread(recognizer.load_models):
+                return
+            samples_16k = _resample_to_16k(samples, self._input_sample_rate)
+            outcome = await asyncio.to_thread(recognizer.recognize, samples_16k.astype(np.float32) / 32768.0)
+        except Exception as exc:
+            logger.warning("Speaker identification failed: %s", exc)
+            return
+        if outcome.face_id is None or outcome.name is None:
+            logger.debug("Speaker identification: no enrolled voice matched (best %.3f)", outcome.similarity)
+            return
+
+        current = self.deps.current_identity
+        if current is not None and current.face_id == outcome.face_id:
+            return
+        identity = SessionIdentity(name=outcome.name, face_id=outcome.face_id, source="voice")
+        self.deps.current_identity = identity
+        self._emit_identity(identity)
+        logger.info("Speaker identified: %s (similarity %.3f)", outcome.name, outcome.similarity)
+        if self.connection is None:
+            return
+        # Lands before the server generates this turn's response, so the reply
+        # after a speaker change already carries the right name.
+        try:
+            await self.connection.conversation.item.create(
+                item={
+                    "type": "message",
+                    "role": "user",
+                    "content": [{"type": "input_text", "text": SPEAKER_SWITCH_NOTE.format(name=outcome.name)}],
+                },
+            )
+        except Exception as exc:
+            logger.warning("Could not inject the speaker-switch note: %s", exc)
+
     async def _watch_spoken_emotion(self, spoken_text: str) -> None:
         """Emote when the model's own spoken words name an emotion.
 
@@ -1042,6 +1129,13 @@ class HuggingFaceRealtimeHandler(ConversationHandler):
             self.input_transcript_chunks_by_item = InputTranscriptChunksByItem()
             # A fresh session ends any stale silent wait and starts a clean transcript.
             self._silent_wait_call_ids.clear()
+            # A fresh session starts with no utterance captured and no stale
+            # speech buffer from the previous one.
+            self._capturing_user_speech = False
+            self._user_speech_chunks = []
+            self._user_speech_samples = 0
+            self._speaker_attributed = False
+            self._last_user_speech = None
             if self.deps.conversation_history is not None:
                 self.deps.conversation_history.new_session()
 
@@ -1070,6 +1164,7 @@ class HuggingFaceRealtimeHandler(ConversationHandler):
                         self._turn_first_audio_at = None
                         self._turn_spoken_text = ""
                         self._turn_spoken_emotion_done = False
+                        self._begin_user_speech_capture()
                         if self._clear_queue:
                             self._clear_queue()
                         self.deps.movement_manager.set_listening(True)
@@ -1077,6 +1172,7 @@ class HuggingFaceRealtimeHandler(ConversationHandler):
 
                     if event.type == "input_audio_buffer.speech_stopped":
                         self._mark_activity("user_speech_stopped")
+                        self._end_user_speech_capture()
                         self.deps.movement_manager.set_listening(False)
                         logger.debug("User speech stopped - server will auto-commit with VAD")
 
@@ -1307,7 +1403,7 @@ class HuggingFaceRealtimeHandler(ConversationHandler):
             # chatter around the robot cannot trigger a model turn.
             return
 
-        _, audio_frame = frame
+        sample_rate, audio_frame = frame
         if audio_frame.size == 0:
             return
 
@@ -1323,6 +1419,19 @@ class HuggingFaceRealtimeHandler(ConversationHandler):
         # Cast if needed
         audio_frame = audio_to_int16(audio_frame)
 
+        if self._capturing_user_speech:
+            self._input_sample_rate = sample_rate
+            self._user_speech_chunks.append(audio_frame)
+            self._user_speech_samples += audio_frame.size
+            # Attribute mid-utterance so the identity lands before this turn's
+            # response is generated; the snapshot protects against a new
+            # utterance opening while the embedding still computes.
+            if not self._speaker_attributed and self._user_speech_samples >= int(
+                self._input_sample_rate * _SPEAKER_EARLY_ATTRIBUTE_S
+            ):
+                self._speaker_attributed = True
+                self._schedule_speaker_attribution(np.concatenate(self._user_speech_chunks))
+
         # Send to the realtime input buffer (guard against races during reconnect).
         try:
             audio_message = base64.b64encode(audio_frame.tobytes()).decode("utf-8")
@@ -1336,6 +1445,9 @@ class HuggingFaceRealtimeHandler(ConversationHandler):
         # Never let a late identity resolution outlive the session it was for.
         if self._identity_task is not None and not self._identity_task.done():
             self._identity_task.cancel()
+        # Same for an in-flight speaker attribution.
+        if self._speaker_id_task is not None and not self._speaker_id_task.done():
+            self._speaker_id_task.cancel()
 
         # Unblock the response sender worker so it can exit
         self._response_done_event.set()

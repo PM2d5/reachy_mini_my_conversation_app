@@ -11,6 +11,7 @@ import pytest
 import my_conversation_app.conversation_handler as conv_mod
 import my_conversation_app.huggingface_realtime as hf_mod
 from my_conversation_app.config import config, get_default_voice
+from my_conversation_app.audio.speaker_id import SpeakerMatchOutcome
 from my_conversation_app.face_recognition import SessionIdentity
 from my_conversation_app.tools.core_tools import ToolDependencies
 from my_conversation_app.tools.play_emotion import PlayEmotion
@@ -899,3 +900,122 @@ async def test_session_exit_resets_response_done_event(monkeypatch: Any) -> None
     await handler._run_realtime_session()
 
     assert handler._response_done_event.is_set()
+
+
+class _StubSpeakerRecognizer:
+    """Stand-in for the speaker service with a scripted match outcome."""
+
+    def __init__(self, name: str | None, face_id: str | None, similarity: float = 0.8) -> None:
+        self._outcome = SpeakerMatchOutcome(name=name, face_id=face_id, similarity=similarity)
+        self.recognized_samples: list[np.ndarray] = []
+
+    def load_models(self) -> bool:
+        return True
+
+    def recognize(self, samples: np.ndarray) -> SpeakerMatchOutcome:
+        self.recognized_samples.append(samples)
+        return self._outcome
+
+
+def _handler_with_speaker(
+    recognizer: _StubSpeakerRecognizer, current_identity: SessionIdentity | None
+) -> tuple[HuggingFaceRealtimeHandler, ToolDependencies]:
+    deps = ToolDependencies(reachy_mini=MagicMock(), movement_manager=MagicMock())
+    deps.speaker_recognizer = recognizer  # type: ignore[assignment]
+    deps.current_identity = current_identity
+    handler = HuggingFaceRealtimeHandler(deps)
+    handler.connection = AsyncMock()
+    return handler, deps
+
+
+async def _settle_speaker_attribution(handler: HuggingFaceRealtimeHandler) -> None:
+    """Await the scheduled attribution task, if one was scheduled."""
+    if handler._speaker_id_task is not None:
+        await handler._speaker_id_task
+
+
+@pytest.mark.asyncio
+async def test_speaker_switch_updates_identity_and_notifies_model() -> None:
+    """A different enrolled voice switches the identity and injects a switch note."""
+    handler, deps = _handler_with_speaker(
+        _StubSpeakerRecognizer(name="老婆", face_id="f_wife"),
+        SessionIdentity(name="凯蕾", face_id="f_kailei"),
+    )
+    emitted: list[SessionIdentity | None] = []
+    handler.set_identity_observer(emitted.append)
+
+    handler._begin_user_speech_capture()
+    await handler.receive((16000, np.ones(32000, dtype=np.int16)))  # 2 s: early trigger
+    await _settle_speaker_attribution(handler)
+
+    assert deps.current_identity == SessionIdentity(name="老婆", face_id="f_wife", source="voice")
+    assert emitted == [SessionIdentity(name="老婆", face_id="f_wife", source="voice")]
+    note = handler.connection.conversation.item.create.call_args.kwargs["item"]["content"][0]["text"]
+    assert "老婆" in note
+
+
+@pytest.mark.asyncio
+async def test_same_speaker_keeps_identity_without_note() -> None:
+    """The current person's own utterance neither switches identity nor injects."""
+    handler, deps = _handler_with_speaker(
+        _StubSpeakerRecognizer(name="凯蕾", face_id="f_kailei"),
+        SessionIdentity(name="凯蕾", face_id="f_kailei"),
+    )
+
+    handler._begin_user_speech_capture()
+    await handler.receive((16000, np.ones(32000, dtype=np.int16)))
+    await _settle_speaker_attribution(handler)
+
+    assert deps.current_identity == SessionIdentity(name="凯蕾", face_id="f_kailei")
+    handler.connection.conversation.item.create.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_unmatched_speaker_keeps_identity() -> None:
+    """A voice below the enrolled threshold is ignored, identity unchanged."""
+    handler, deps = _handler_with_speaker(
+        _StubSpeakerRecognizer(name=None, face_id=None),
+        SessionIdentity(name="凯蕾", face_id="f_kailei"),
+    )
+
+    handler._begin_user_speech_capture()
+    await handler.receive((16000, np.ones(32000, dtype=np.int16)))
+    await _settle_speaker_attribution(handler)
+
+    assert deps.current_identity == SessionIdentity(name="凯蕾", face_id="f_kailei")
+    handler.connection.conversation.item.create.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_short_utterance_is_never_attributed() -> None:
+    """Under 1.5 s the utterance is not attributed, not even at speech stop."""
+    recognizer = _StubSpeakerRecognizer(name="老婆", face_id="f_wife")
+    handler, deps = _handler_with_speaker(recognizer, None)
+
+    handler._begin_user_speech_capture()
+    await handler.receive((16000, np.ones(16000, dtype=np.int16)))  # 1.0 s
+    handler._end_user_speech_capture()
+    await asyncio.sleep(0)
+
+    assert handler._speaker_id_task is None
+    assert recognizer.recognized_samples == []
+    assert deps.current_identity is None
+    # The utterance is still kept for voice enrollment via remember_face.
+    rate, stashed = deps.get_last_user_speech()  # type: ignore[misc]
+    assert rate == 16000 and stashed.shape == (16000,)
+
+
+@pytest.mark.asyncio
+async def test_speech_stop_attributes_a_1_8s_utterance() -> None:
+    """1.5–2 s utterances skip the early trigger but attribute at speech stop."""
+    recognizer = _StubSpeakerRecognizer(name="老婆", face_id="f_wife")
+    handler, deps = _handler_with_speaker(recognizer, None)
+
+    handler._begin_user_speech_capture()
+    await handler.receive((16000, np.ones(28800, dtype=np.int16)))  # 1.8 s: below early, above min
+    assert handler._speaker_id_task is None
+
+    handler._end_user_speech_capture()
+    await _settle_speaker_attribution(handler)
+
+    assert deps.current_identity == SessionIdentity(name="老婆", face_id="f_wife", source="voice")
