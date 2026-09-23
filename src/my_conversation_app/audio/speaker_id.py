@@ -31,12 +31,35 @@ _NUM_MEL_BINS = 80
 _LOW_FREQ_HZ = 20.0
 _HIGH_FREQ_HZ = 7600.0  # sherpa-onnx convention: nyquist 8000 + high_freq -400
 
-# An utterance shorter than this is not attributed: a syllable or two gives an
-# embedding too noisy to bet an identity switch on.
-_MIN_RECOGNIZE_SAMPLES = 24000  # 1.5 s
-# Enrollment accepts shorter audio than recognition: a bare name (「凯蕾」) is a
-# weak but usable seed, and progressive matches grow the reference set later.
-_MIN_ENROLL_SAMPLES = 16000  # 1.0 s
+# Less actual speech than this is not attributed: a syllable or two gives an
+# embedding too noisy to bet an identity switch on (measured AFTER silence
+# trimming — server-VAD segments trail up to ~0.8 s of silence that dilutes
+# the embedding; observed live: same-speaker 0.614 with trailing silence vs
+# 0.75+ trimmed in simulation).
+_MIN_RECOGNIZE_SAMPLES = 16000  # 1.0 s of speech
+# Enrollment accepts the same floor: a bare name (「凯蕾」) is a weak but
+# usable seed, and progressive matches grow the reference set later.
+_MIN_ENROLL_SAMPLES = 16000  # 1.0 s of speech
+_TRIM_WINDOW = 320  # 20 ms RMS windows for the silence trim
+_TRIM_RELATIVE_FLOOR = 0.05  # voiced = above 5% of the segment's peak RMS
+_TRIM_ABSOLUTE_FLOOR = 0.004  # ~130 int16 counts: typical quiet-room mic noise
+
+
+def _trim_to_speech(samples: NDArray[np.float32]) -> NDArray[np.float32]:
+    """Drop leading/trailing near-silence from a VAD segment."""
+    window_count = samples.size // _TRIM_WINDOW
+    if window_count < 2:
+        return samples
+    frames = samples[: window_count * _TRIM_WINDOW].reshape(window_count, _TRIM_WINDOW)
+    rms = np.sqrt((frames.astype(np.float64) ** 2).mean(axis=1))
+    floor = max(float(rms.max()) * _TRIM_RELATIVE_FLOOR, _TRIM_ABSOLUTE_FLOOR)
+    voiced = np.flatnonzero(rms > floor)
+    if voiced.size == 0:
+        # No speech at all (echo of the robot's own voice, a noise blip): the
+        # length check downstream skips it as zero speech rather than
+        # embedding pure noise.
+        return samples[:0]
+    return samples[voiced[0] * _TRIM_WINDOW : (voiced[-1] + 1) * _TRIM_WINDOW]
 
 
 def _mel_scale(freq: NDArray[np.float64] | float) -> NDArray[np.float64]:
@@ -137,6 +160,9 @@ class SpeakerRecognitionService:
     # embedding back as an extra reference, so a scratchy first enrollment
     # tightens as the person keeps talking. Same mechanics as the face service.
     _PROGRESSIVE_MATCH_MARGIN = 0.08
+    # The winner must beat the runner-up person by this much; inside the gap
+    # the utterance is ambiguous and the incumbent identity stays.
+    _RUNNER_UP_MARGIN = 0.08
 
     def __init__(
         self,
@@ -180,48 +206,77 @@ class SpeakerRecognitionService:
         embedder = self._embedder
         if embedder is None or self._load_failed:
             return None
-        if samples.size < _MIN_ENROLL_SAMPLES:
+        speech = _trim_to_speech(samples)
+        if speech.size < _MIN_ENROLL_SAMPLES:
             logger.info(
-                "Voice enrollment skipped: %.1f s of speech is under the %.1f s minimum",
-                samples.size / SPEAKER_SAMPLE_RATE,
-                _MIN_ENROLL_SAMPLES / SPEAKER_SAMPLE_RATE,
+                "Voice enrollment skipped: only %.1f s of speech after silence trim",
+                speech.size / SPEAKER_SAMPLE_RATE,
             )
             return None
-        return embedder.embed(samples)
+        return embedder.embed(speech)
 
     def embed(self, samples: NDArray[np.float32]) -> NDArray[np.float32] | None:
         """Return the utterance's embedding, or None when it cannot be computed."""
         embedder = self._embedder
         if embedder is None or self._load_failed:
             return None
-        if samples.size < _MIN_RECOGNIZE_SAMPLES:
+        speech = _trim_to_speech(samples)
+        if speech.size < _MIN_RECOGNIZE_SAMPLES:
+            logger.info(
+                "Speaker match: skipped, only %.1f s of speech after silence trim",
+                speech.size / SPEAKER_SAMPLE_RATE,
+            )
             return None
-        return embedder.embed(samples)
+        return embedder.embed(speech)
 
     def recognize(self, samples: NDArray[np.float32]) -> SpeakerMatchOutcome:
-        """Match one utterance against every enrolled person's voice references."""
+        """Match one utterance against every enrolled person's voice references.
+
+        Closed-set identification with an open-set floor: the utterance belongs
+        to the top person only when they clear the absolute threshold AND beat
+        the runner-up by a clear margin. Real far-field mic audio scores lower
+        than the clean-speech calibration, and in an enrolled household the
+        relative gap is the reliable signal; ambiguity keeps the incumbent.
+        """
         embedding = self.embed(samples)
         if embedding is None:
             return SpeakerMatchOutcome(name=None, face_id=None, similarity=0.0)
+        # Compare on direction only: the real embedder unit-normalizes, but the
+        # math must not silently break on any other magnitude.
+        embedding = embedding / np.linalg.norm(embedding)
 
-        best_face_id: str | None = None
-        best_name: str | None = None
-        best_similarity = 0.0
+        person_scores: list[tuple[float, str, str]] = []
         for face in list_enrolled_faces(self._instance_path):
+            person_best = 0.0
             for reference in face.voice_embeddings:
                 reference_vector = np.asarray(reference, dtype=np.float32)
                 reference_norm = np.linalg.norm(reference_vector)
                 if reference_norm == 0.0:
                     continue
-                similarity = float(np.dot(embedding, reference_vector / reference_norm))
-                if similarity > best_similarity:
-                    best_similarity = similarity
-                    best_name = face.name
-                    best_face_id = face.id
+                person_best = max(person_best, float(np.dot(embedding, reference_vector / reference_norm)))
+            if face.voice_embeddings:
+                person_scores.append((person_best, face.name, face.id))
+
+        if not person_scores:
+            return SpeakerMatchOutcome(name=None, face_id=None, similarity=0.0)
+
+        person_scores.sort(reverse=True)
+        best_similarity, best_name, best_face_id = person_scores[0]
+        runner_up = person_scores[1][0] if len(person_scores) > 1 else None
+        score_breakdown = ", ".join(f"{name}={score:.3f}" for score, name, _ in person_scores)
 
         threshold = config.SPEAKER_MATCH_THRESHOLD
-        if best_face_id is None or best_similarity < threshold:
+        clear_of_runner_up = runner_up is None or best_similarity - runner_up >= self._RUNNER_UP_MARGIN
+        if best_similarity < threshold or not clear_of_runner_up:
+            logger.info(
+                "Speaker match: no decision (%s; threshold %.2f, margin %.2f)",
+                score_breakdown,
+                threshold,
+                self._RUNNER_UP_MARGIN,
+            )
             return SpeakerMatchOutcome(name=None, face_id=None, similarity=best_similarity)
+
+        logger.info("Speaker match: %s (%s)", best_name, score_breakdown)
 
         if best_similarity >= threshold + self._PROGRESSIVE_MATCH_MARGIN:
             append_voice_embeddings(self._instance_path, best_face_id, [embedding.tolist()])

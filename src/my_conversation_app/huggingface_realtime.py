@@ -88,9 +88,12 @@ _IDENTITY_RESOLVE_TIMEOUT_S: Final[float] = 3.0
 # before the server generates the turn's response — the robot answers the very
 # turn that switched speakers with the right name.
 _SPEAKER_EARLY_ATTRIBUTE_S: Final[float] = 2.0
+# A completed utterance at least this long is re-judged on its full audio,
+# which embeds more reliably than the early 2 s prefix.
+_SPEAKER_FINAL_ATTRIBUTE_S: Final[float] = 2.5
 # Shorter than this and the utterance is not attributed at all (the service
-# enforces its own minimum after resampling; this only avoids a doomed task).
-_SPEAKER_MIN_ATTRIBUTE_S: Final[float] = 1.5
+# re-checks on silence-trimmed speech; this only avoids a doomed task).
+_SPEAKER_MIN_ATTRIBUTE_S: Final[float] = 1.0
 
 
 class InputTranscriptChunksByItem(BaseModel):
@@ -208,9 +211,13 @@ class HuggingFaceRealtimeHandler(ConversationHandler):
         self._user_speech_chunks: list[NDArray[np.int16]] = []
         self._user_speech_samples = 0
         self._speaker_attributed = False
+        # The face_id an attribution decided for the CURRENT utterance; a set
+        # value makes the full-segment pass redundant.
+        self._speaker_decision_face_id: str | None = None
         self._input_sample_rate = SPEAKER_SAMPLE_RATE
         self._last_user_speech: tuple[int, NDArray[np.int16]] | None = None
         self._speaker_id_task: asyncio.Task[None] | None = None
+        self._early_speaker_task: asyncio.Task[None] | None = None
         # The remember_face tool enrolls the voice of the utterance that asked
         # to be remembered; the loop is the only place that audio exists.
         deps.get_last_user_speech = self._get_last_user_speech
@@ -1038,29 +1045,52 @@ class HuggingFaceRealtimeHandler(ConversationHandler):
         self._user_speech_chunks = []
         self._user_speech_samples = 0
         self._speaker_attributed = False
+        self._speaker_decision_face_id = None
 
     def _end_user_speech_capture(self) -> None:
-        """Close the utterance buffer and attribute a not-yet-decided speaker."""
+        """Close the utterance buffer; recover on the full audio when needed.
+
+        Long utterances get a full-segment pass here ONLY when the mid-utterance
+        early trigger decided nothing (the 2 s prefix is noisier than the whole
+        utterance) — an early match stands, so one utterance never shows up as
+        two attributions. A segment too short for the early window but at least
+        the minimum gets its only pass here.
+        """
         self._capturing_user_speech = False
         if not self._user_speech_chunks:
             return
         segment = np.concatenate(self._user_speech_chunks)
         self._last_user_speech = (self._input_sample_rate, segment)
-        if not self._speaker_attributed and segment.size >= int(self._input_sample_rate * _SPEAKER_MIN_ATTRIBUTE_S):
-            self._speaker_attributed = True
+        if segment.size >= int(self._input_sample_rate * _SPEAKER_FINAL_ATTRIBUTE_S):
+            self._schedule_speaker_attribution(segment, final_pass=True)
+        elif not self._speaker_attributed and segment.size >= int(self._input_sample_rate * _SPEAKER_MIN_ATTRIBUTE_S):
             self._schedule_speaker_attribution(segment)
 
-    def _schedule_speaker_attribution(self, samples: NDArray[np.int16]) -> None:
+    def _schedule_speaker_attribution(self, samples: NDArray[np.int16], *, final_pass: bool = False) -> None:
         """Identify the speaker of one utterance snapshot; never blocks the loop."""
-        self._speaker_id_task = asyncio.create_task(self._attribute_speaker(samples), name="speaker-identification")
+        task = asyncio.create_task(
+            self._attribute_speaker(samples, final_pass=final_pass), name="speaker-identification"
+        )
+        if not final_pass:
+            self._early_speaker_task = task
+        self._speaker_id_task = task
 
-    async def _attribute_speaker(self, samples: NDArray[np.int16]) -> None:
+    async def _attribute_speaker(self, samples: NDArray[np.int16], *, final_pass: bool = False) -> None:
         """Switch the session identity when the utterance belongs to someone else."""
+        if final_pass:
+            # The early pass may still be embedding in its worker thread; its
+            # decision (if any) makes the full-segment re-judgment redundant.
+            previous = self._early_speaker_task
+            if previous is not None and not previous.done():
+                await previous
+            if self._speaker_decision_face_id is not None:
+                return
         recognizer = self.deps.speaker_recognizer
         if recognizer is None or not config.SPEAKER_ID_ENABLED:
             return
         try:
             if not await asyncio.to_thread(recognizer.load_models):
+                logger.warning("Speaker identification unavailable; keeping the current identity")
                 return
             samples_16k = _resample_to_16k(samples, self._input_sample_rate)
             outcome = await asyncio.to_thread(recognizer.recognize, samples_16k.astype(np.float32) / 32768.0)
@@ -1068,8 +1098,8 @@ class HuggingFaceRealtimeHandler(ConversationHandler):
             logger.warning("Speaker identification failed: %s", exc)
             return
         if outcome.face_id is None or outcome.name is None:
-            logger.debug("Speaker identification: no enrolled voice matched (best %.3f)", outcome.similarity)
             return
+        self._speaker_decision_face_id = outcome.face_id
 
         current = self.deps.current_identity
         if current is not None and current.face_id == outcome.face_id:
@@ -1146,6 +1176,7 @@ class HuggingFaceRealtimeHandler(ConversationHandler):
             self._user_speech_chunks = []
             self._user_speech_samples = 0
             self._speaker_attributed = False
+            self._speaker_decision_face_id = None
             self._last_user_speech = None
             if self.deps.conversation_history is not None:
                 self.deps.conversation_history.new_session()

@@ -903,10 +903,18 @@ async def test_session_exit_resets_response_done_event(monkeypatch: Any) -> None
 
 
 class _StubSpeakerRecognizer:
-    """Stand-in for the speaker service with a scripted match outcome."""
+    """Stand-in for the speaker service with scripted match outcomes."""
 
-    def __init__(self, name: str | None, face_id: str | None, similarity: float = 0.8) -> None:
+    def __init__(
+        self,
+        name: str | None,
+        face_id: str | None,
+        similarity: float = 0.8,
+        then: SpeakerMatchOutcome | None = None,
+    ) -> None:
+        """Every recognize() returns the scripted outcome, then the follow-up one."""
         self._outcome = SpeakerMatchOutcome(name=name, face_id=face_id, similarity=similarity)
+        self._then = then
         self.recognized_samples: list[np.ndarray] = []
 
     def load_models(self) -> bool:
@@ -914,7 +922,10 @@ class _StubSpeakerRecognizer:
 
     def recognize(self, samples: np.ndarray) -> SpeakerMatchOutcome:
         self.recognized_samples.append(samples)
-        return self._outcome
+        outcome = self._outcome
+        if self._then is not None:
+            self._outcome, self._then = self._then, None
+        return outcome
 
 
 def _handler_with_speaker(
@@ -993,7 +1004,7 @@ async def test_short_utterance_is_never_attributed() -> None:
     handler, deps = _handler_with_speaker(recognizer, None)
 
     handler._begin_user_speech_capture()
-    await handler.receive((16000, np.ones(16000, dtype=np.int16)))  # 1.0 s
+    await handler.receive((16000, np.ones(9600, dtype=np.int16)))  # 0.6 s
     handler._end_user_speech_capture()
     await asyncio.sleep(0)
 
@@ -1002,7 +1013,7 @@ async def test_short_utterance_is_never_attributed() -> None:
     assert deps.current_identity is None
     # The utterance is still kept for voice enrollment via remember_face.
     rate, stashed = deps.get_last_user_speech()  # type: ignore[misc]
-    assert rate == 16000 and stashed.shape == (16000,)
+    assert rate == 16000 and stashed.shape == (9600,)
 
 
 @pytest.mark.asyncio
@@ -1057,3 +1068,48 @@ async def test_late_face_result_cannot_override_a_voice_identity() -> None:
     await handler._resolve_session_identity()
 
     assert deps.current_identity == SessionIdentity(name="老公", face_id="f_voice", source="voice")
+
+
+@pytest.mark.asyncio
+async def test_full_utterance_rejudgment_recovers_a_failed_early_match() -> None:
+    """The 2 s early window can miss; the full-segment pass at speech stop recovers.
+
+    Far-field audio on the short early prefix may score under the floor; the
+    completed utterance re-judges on all of it and switches the identity then.
+    """
+    recognizer = _StubSpeakerRecognizer(
+        name=None,
+        face_id=None,
+        then=SpeakerMatchOutcome(name="老婆", face_id="f_wife", similarity=0.7),
+    )
+    handler, deps = _handler_with_speaker(recognizer, None)
+
+    handler._begin_user_speech_capture()
+    await handler.receive((16000, np.ones(32000, dtype=np.int16)))  # 2.0 s: early window misses
+    await _settle_speaker_attribution(handler)
+    assert deps.current_identity is None
+
+    await handler.receive((16000, np.ones(16000, dtype=np.int16)))  # …to 3.0 s total
+    handler._end_user_speech_capture()  # >= 2.5 s: full-segment re-judgment
+    await _settle_speaker_attribution(handler)
+
+    assert deps.current_identity == SessionIdentity(name="老婆", face_id="f_wife", source="voice")
+    # The early prefix embedded 2 s; the final pass got the whole 3 s segment.
+    assert recognizer.recognized_samples[0].shape == (32000,)
+    assert recognizer.recognized_samples[1].shape == (48000,)
+
+
+@pytest.mark.asyncio
+async def test_early_match_suppresses_the_full_segment_repass() -> None:
+    """One utterance, one attribution: a confident early match needs no re-judge."""
+    recognizer = _StubSpeakerRecognizer(name="凯蕾", face_id="f_kailei")
+    handler, deps = _handler_with_speaker(recognizer, None)
+
+    handler._begin_user_speech_capture()
+    await handler.receive((16000, np.ones(32000, dtype=np.int16)))  # 2.0 s: early match
+    await handler.receive((16000, np.ones(16000, dtype=np.int16)))  # …to 3.0 s
+    handler._end_user_speech_capture()  # >= 2.5 s, but the early pass decided
+    await _settle_speaker_attribution(handler)
+
+    assert len(recognizer.recognized_samples) == 1
+    assert deps.current_identity == SessionIdentity(name="凯蕾", face_id="f_kailei", source="voice")

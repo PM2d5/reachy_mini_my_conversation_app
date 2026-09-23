@@ -372,11 +372,12 @@ def resolve_face_match_threshold() -> float:
 
 SPEAKER_ID_ENABLED_ENV = "REACHY_MINI_SPEAKER_ID_ENABLED"
 SPEAKER_MATCH_THRESHOLD_ENV = "REACHY_MINI_SPEAKER_MATCH_THRESHOLD"
-# Measured with the bundled CAM++ model on clean speech: same speaker across
-# texts lands 0.7+, different speakers average 0.3–0.5 (worst case, two similar
-# voices reading the same text, 0.69). 0.6 sits in the gap; high-margin matches
-# keep tightening each person's reference set.
-DEFAULT_SPEAKER_MATCH_THRESHOLD = 0.60
+# Clean-speech calibration: same speaker across texts 0.7+, different speakers
+# 0.3–0.5. Real far-field mic audio pulls same-speaker scores down — observed
+# live: neither enrolled person ever cleared 0.60, so every turn went unmatched.
+# 0.50 as the absolute floor, with the recognizer additionally requiring a
+# clear margin over the runner-up person before it attributes an utterance.
+DEFAULT_SPEAKER_MATCH_THRESHOLD = 0.50
 
 
 def resolve_speaker_match_threshold() -> float:
