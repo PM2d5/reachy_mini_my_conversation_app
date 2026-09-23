@@ -10,19 +10,27 @@ import pytest
 import my_conversation_app.tools.remember_face as remember_face_mod
 from my_conversation_app.faces import EnrolledFace
 from my_conversation_app.config import config
-from my_conversation_app.face_recognition import EnrollmentOutcome
+from my_conversation_app.face_recognition import EnrollmentOutcome, RecognitionOutcome
 from my_conversation_app.tools.core_tools import ToolDependencies
 from my_conversation_app.tools.remember_face import RememberFace, match_face_enrollment_command
 
 
 class FakeRecognizer:
-    """Stands in for FaceRecognitionService with a canned enroll outcome."""
+    """Stands in for FaceRecognitionService with canned enroll/recognize outcomes."""
 
-    def __init__(self, outcome: EnrollmentOutcome) -> None:
-        """Store the canned outcome for every enroll() call."""
+    def __init__(
+        self,
+        outcome: EnrollmentOutcome,
+        recognition: RecognitionOutcome | None = None,
+    ) -> None:
+        """Store the canned outcomes for every enroll()/recognize() call."""
         self.available = True
         self._outcome = outcome
+        self._recognition = recognition or RecognitionOutcome(
+            name=None, face_id=None, similarity=0.0, face_detected=True
+        )
         self.enroll_calls: list[tuple[str, int]] = []
+        self.recognize_calls: list[np.ndarray] = []
 
     def load_models(self) -> bool:
         """Report the fake service as ready."""
@@ -32,6 +40,11 @@ class FakeRecognizer:
         """Record the call and return the canned outcome."""
         self.enroll_calls.append((name, len(frames)))
         return self._outcome
+
+    def recognize(self, frame: np.ndarray) -> RecognitionOutcome:
+        """Record the call and return the canned outcome."""
+        self.recognize_calls.append(frame)
+        return self._recognition
 
 
 def _ok_outcome() -> EnrollmentOutcome:
@@ -247,3 +260,70 @@ async def test_remember_face_skips_voice_when_utterance_missing(tmp_path: Path) 
     no_service.get_last_user_speech = lambda: (16000, np.ones(32000, dtype=np.int16))
     assert (await RememberFace()(no_service, name="凯蕾"))["voice_enrolled"] is False
     assert speaker.enrolled_samples == []
+
+
+def _existing_person() -> EnrolledFace:
+    return EnrolledFace(id="f_1", name="凯蕾", embeddings=((1.0, 0.0),), created_at=1, last_seen_at=1)
+
+
+@pytest.mark.asyncio
+async def test_reenrollment_attaches_voice_to_matching_existing_person(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Re-saying 我叫X，记住我 attaches the voice when the face confirms the name."""
+    appended: list[tuple[object, str, list[list[float]]]] = []
+    monkeypatch.setattr(
+        remember_face_mod,
+        "append_voice_embeddings",
+        lambda instance, face_id, embeddings: (
+            appended.append((instance, face_id, embeddings))
+            or EnrolledFace(id=face_id, name="凯蕾", embeddings=(), created_at=1, last_seen_at=1)
+        ),
+    )
+    monkeypatch.setattr(remember_face_mod, "list_enrolled_faces", lambda _instance: [_existing_person()])
+    recognizer = FakeRecognizer(
+        EnrollmentOutcome(face=None, reason="duplicate_name"),
+        recognition=RecognitionOutcome(name="凯蕾", face_id="f_1", similarity=0.9, face_detected=True),
+    )
+    speaker = FakeSpeakerRecognizer(np.array([0.25, 1.0], dtype=np.float32))
+    deps = _deps(recognizer)
+    deps.instance_path = tmp_path
+    deps.speaker_recognizer = speaker  # type: ignore[assignment]
+    deps.get_last_user_speech = lambda: (16000, np.ones(32000, dtype=np.int16))
+
+    result = await RememberFace()(deps, name="凯蕾")
+
+    assert result["saved"] == "凯蕾"
+    assert result["face_id"] == "f_1"
+    assert result["voice_enrolled"] is True
+    assert appended == [(tmp_path, "f_1", [[0.25, 1.0]])]
+
+
+@pytest.mark.asyncio
+async def test_reenrollment_rejects_a_face_that_is_not_that_person(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A stranger re-saying someone's name must not glue their voice onto the record."""
+    appended: list[tuple[object, str, list[list[float]]]] = []
+    monkeypatch.setattr(
+        remember_face_mod,
+        "append_voice_embeddings",
+        lambda instance, face_id, embeddings: (
+            appended.append((instance, face_id, embeddings))
+            or EnrolledFace(id=face_id, name="凯蕾", embeddings=(), created_at=1, last_seen_at=1)
+        ),
+    )
+    monkeypatch.setattr(remember_face_mod, "list_enrolled_faces", lambda _instance: [_existing_person()])
+    recognizer = FakeRecognizer(
+        EnrollmentOutcome(face=None, reason="duplicate_name"),
+        recognition=RecognitionOutcome(name="老婆", face_id="f_other", similarity=0.9, face_detected=True),
+    )
+    deps = _deps(recognizer)
+    deps.instance_path = tmp_path
+    deps.speaker_recognizer = FakeSpeakerRecognizer(np.array([0.25, 1.0], dtype=np.float32))
+    deps.get_last_user_speech = lambda: (16000, np.ones(32000, dtype=np.int16))
+
+    result = await RememberFace()(deps, name="凯蕾")
+
+    assert result["error"] == "this name is already enrolled"
+    assert appended == []

@@ -8,9 +8,15 @@ from typing import Any, Dict
 
 import numpy as np
 
-from my_conversation_app.faces import append_voice_embeddings
+from my_conversation_app.faces import (
+    EnrolledFace,
+    list_enrolled_faces,
+    normalize_face_name,
+    append_voice_embeddings,
+)
 from my_conversation_app.config import config
 from my_conversation_app.audio.wake_word import _resample_to_16k
+from my_conversation_app.face_recognition import FaceRecognitionService
 from my_conversation_app.tools.core_tools import Tool, ToolDependencies
 
 
@@ -197,12 +203,46 @@ class RememberFace(Tool):
 
         outcome = await asyncio.to_thread(recognizer.enroll, name, captured)
         if outcome.face is None:
+            # People enrolled before voiceprints existed hit duplicate_name the
+            # moment they re-say 我叫X，记住我; if a fresh frame confirms they are
+            # that enrolled person, the utterance's voice attaches to them.
+            if outcome.reason == "duplicate_name" and captured:
+                existing = await asyncio.to_thread(self._match_enrolled_face, recognizer, deps, name, captured)
+                if existing is not None:
+                    logger.info("Re-enrollment: attaching voice to existing %r", existing.name)
+                    RememberFace._last_enrollment = (existing.name, time.monotonic())
+                    voice_enrolled = await self._enroll_voice(deps, existing.id)
+                    return {"saved": existing.name, "face_id": existing.id, "voice_enrolled": voice_enrolled}
             reason = outcome.reason or "unknown"
             logger.warning("Face enrollment for %r failed: %s", name, reason)
             return {"error": _ENROLLMENT_ERRORS.get(reason, f"enrollment failed ({reason})")}
         RememberFace._last_enrollment = (outcome.face.name, time.monotonic())
         voice_enrolled = await self._enroll_voice(deps, outcome.face.id)
         return {"saved": outcome.face.name, "face_id": outcome.face.id, "voice_enrolled": voice_enrolled}
+
+    @staticmethod
+    def _match_enrolled_face(
+        recognizer: FaceRecognitionService,
+        deps: ToolDependencies,
+        name: str,
+        frames: list[np.ndarray],
+    ) -> EnrolledFace | None:
+        """Return the same-named person when a fresh frame recognizes as them.
+
+        The face check is the gate that keeps a stranger's 我叫X，记住我 from
+        gluing their voice onto someone else's record.
+        """
+        normalized = normalize_face_name(name)
+        existing = next(
+            (face for face in list_enrolled_faces(deps.instance_path) if face.name.lower() == normalized.lower()),
+            None,
+        )
+        if existing is None:
+            return None
+        for frame in frames:
+            if recognizer.recognize(frame).face_id == existing.id:
+                return existing
+        return None
 
     async def _enroll_voice(self, deps: ToolDependencies, face_id: str) -> bool:
         """Attach the just-spoken utterance's embedding as the person's voice reference.
