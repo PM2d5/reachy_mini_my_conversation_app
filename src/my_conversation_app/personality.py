@@ -59,12 +59,16 @@ def _visible_profile_names(profiles_root: Path, prefix: str = "") -> list[str]:
 
 def list_personalities() -> list[str]:
     """List available visible personality profile names."""
-    names = [DEFAULT_PROFILE_NAME]
-    names.extend(
+    bundled = [
         profile_name
         for profile_name in _visible_profile_names(config.PROFILES_DIRECTORY)
         if profile_name != DEFAULT_PROFILE_NAME
-    )
+    ]
+    # default_english is default's English twin — keep it directly after default.
+    if "default_english" in bundled:
+        bundled.remove("default_english")
+        bundled.insert(0, "default_english")
+    names = [DEFAULT_PROFILE_NAME, *bundled]
     user_root = config.user_personalities_root()
     if user_root != config.PROFILES_DIRECTORY:
         names.extend(_visible_profile_names(user_root, f"{USER_PERSONALITIES_DIRNAME}/"))

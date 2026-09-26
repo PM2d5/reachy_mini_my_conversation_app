@@ -289,6 +289,18 @@ def test_user_profile_round_trips_through_instance_dir(tmp_path: Path, monkeypat
     )
 
 
+def test_default_english_lists_directly_after_default(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """default_english stays pinned right behind default in the personality listing."""
+    profiles_root = tmp_path / "profiles"
+    write_profile("default", profiles_root / "default", "Default persona.", ["dance"])
+    write_profile("default_english", profiles_root / "default_english", "English twin persona.", ["dance"])
+    write_profile("bored_teenager", profiles_root / "bored_teenager", "Bored persona.", ["dance"])
+    monkeypatch.setattr(config, "PROFILES_DIRECTORY", profiles_root)
+    monkeypatch.setattr(config, "INSTANCE_PATH", tmp_path)
+
+    assert list_personalities() == ["default", "default_english", "bored_teenager"]
+
+
 def test_packaged_profiles_win_outside_source_checkout(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     """Installed builds should use packaged profiles, not an unrelated sibling folder."""
     unrelated_profiles = tmp_path / "profiles"
