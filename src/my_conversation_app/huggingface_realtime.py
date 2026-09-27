@@ -961,14 +961,15 @@ class HuggingFaceRealtimeHandler(ConversationHandler):
             self.connection = None
             self._response_done_event.set()
 
-    async def _play_emotion_locally(self, intent: str, source: str) -> None:
+    async def _play_emotion_locally(self, intent: str, source: str, explicit_command: bool = False) -> None:
         """Queue a play_emotion move from a local trigger, bypassing the model.
 
         Realtime models (observed on every DashScope model and in Chinese on
         the HF endpoint) voice-act emotional content instead of calling
         play_emotion, so the app plays the move itself. Runs as an idle tool
         call: the result stays out of the model conversation and the model just
-        speaks its reply in tone.
+        speaks its reply in tone. ``explicit_command`` marks a direct user
+        command, which always plays (farewell gestures are otherwise occasional).
         """
         if "play_emotion" not in core_tools.get_tools():
             return
@@ -977,7 +978,7 @@ class HuggingFaceRealtimeHandler(ConversationHandler):
             call_id=call_id,
             tool_call_routine=ToolCallRoutine(
                 tool_name="play_emotion",
-                args_json_str=json.dumps({"emotion": intent}),
+                args_json_str=json.dumps({"emotion": intent, "explicit_command": explicit_command}),
                 deps=self.deps,
             ),
             is_idle_tool_call=True,
@@ -1001,7 +1002,7 @@ class HuggingFaceRealtimeHandler(ConversationHandler):
         intent = match_expression_command(transcript)
         if intent is None:
             return
-        await self._play_emotion_locally(intent, "Expression command matched locally")
+        await self._play_emotion_locally(intent, "Expression command matched locally", explicit_command=True)
 
     async def _maybe_enroll_face_locally(self, transcript: str) -> None:
         """Enroll the speaker when they introduce themselves and ask to be remembered.

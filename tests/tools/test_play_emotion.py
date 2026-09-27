@@ -18,8 +18,9 @@ from my_conversation_app.tools.play_emotion import (
 
 @pytest.fixture(autouse=True)
 def _reset_queued_emotion() -> None:
-    """Keep the cross-test dedupe window from leaking between tests."""
+    """Keep the cross-test dedupe and goodbye-decision state from leaking between tests."""
     PlayEmotion._last_queued_move = None
+    PlayEmotion._last_goodbye_decision = None
 
 
 AVAILABLE_EMOTIONS = [
@@ -197,6 +198,71 @@ async def test_play_emotion_queues_resolved_emotion(monkeypatch: pytest.MonkeyPa
     assert result == {"status": "queued", "emotion": "no_sad1"}
     queued_move = movement_manager.queue_move.call_args.args[0]
     assert queued_move.emotion_name == "no_sad1"
+
+
+@pytest.mark.asyncio
+async def test_play_emotion_goodbye_gesture_is_occasional(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Farewell gestures play on one shared probability roll per farewell turn."""
+
+    class FakeRecordedMoves:
+        def list_moves(self) -> list[str]:
+            return ["loving1", "welcoming2", "confused1"]
+
+    class FakeEmotionQueueMove:
+        def __init__(self, emotion_name: str, recorded_moves: FakeRecordedMoves) -> None:
+            self.emotion_name = emotion_name
+
+    monkeypatch.setattr(play_emotion_module, "EMOTION_AVAILABLE", True)
+    monkeypatch.setattr(play_emotion_module, "EmotionQueueMove", FakeEmotionQueueMove)
+
+    movement_manager = MagicMock()
+    deps = ToolDependencies(reachy_mini=MagicMock(), movement_manager=movement_manager)
+    tool = PlayEmotion()
+    monkeypatch.setattr(tool, "_library", FakeRecordedMoves())
+
+    monkeypatch.setattr(play_emotion_module.random, "random", lambda: 0.9)
+    result = await tool(deps, emotion="goodbye")
+    assert result == {"status": "skipped", "emotion": "loving1"}
+    movement_manager.queue_move.assert_not_called()
+
+    # The same farewell's second trigger (the local spoken-word fallback within
+    # the dedupe window) shares the roll instead of re-rolling into a gesture.
+    result = await tool(deps, emotion="goodbye")
+    assert result == {"status": "skipped", "emotion": "loving1"}
+
+    # A fresh farewell rolls again and a low roll lets the gesture through.
+    PlayEmotion._last_goodbye_decision = None
+    monkeypatch.setattr(play_emotion_module.random, "random", lambda: 0.1)
+    result = await tool(deps, emotion="goodbye")
+    assert result == {"status": "queued", "emotion": "loving1"}
+    movement_manager.queue_move.assert_called_once()
+
+
+@pytest.mark.asyncio
+async def test_play_emotion_explicit_command_always_plays_goodbye(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A direct user command (做个再见的表情) bypasses the occasional-goodbye gate."""
+
+    class FakeRecordedMoves:
+        def list_moves(self) -> list[str]:
+            return ["loving1", "welcoming2", "confused1"]
+
+    class FakeEmotionQueueMove:
+        def __init__(self, emotion_name: str, recorded_moves: FakeRecordedMoves) -> None:
+            self.emotion_name = emotion_name
+
+    monkeypatch.setattr(play_emotion_module, "EMOTION_AVAILABLE", True)
+    monkeypatch.setattr(play_emotion_module, "EmotionQueueMove", FakeEmotionQueueMove)
+    monkeypatch.setattr(play_emotion_module.random, "random", lambda: 0.99)
+
+    movement_manager = MagicMock()
+    deps = ToolDependencies(reachy_mini=MagicMock(), movement_manager=movement_manager)
+    tool = PlayEmotion()
+    monkeypatch.setattr(tool, "_library", FakeRecordedMoves())
+
+    result = await tool(deps, emotion="goodbye", explicit_command=True)
+
+    assert result == {"status": "queued", "emotion": "loving1"}
+    movement_manager.queue_move.assert_called_once()
 
 
 @pytest.mark.asyncio

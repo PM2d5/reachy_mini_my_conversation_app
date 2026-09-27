@@ -362,6 +362,12 @@ def random_curated_emotion(available_emotions: list[str]) -> str:
     return random.choice(available_emotions)
 
 
+# Farewells fire play_emotion from both the model's tool call and the local
+# spoken-word trigger, which made every goodbye emotive; one shared roll per
+# farewell keeps the gesture occasional instead of guaranteed.
+GOODBYE_EMOTION_PROBABILITY = 0.4
+
+
 class PlayEmotion(Tool):
     """Play a pre-recorded emotion."""
 
@@ -393,6 +399,9 @@ class PlayEmotion(Tool):
     # one turn; the dedupe window collapses the duplicate whichever fires first.
     _last_queued_move: tuple[str, float] | None = None
     _duplicate_queue_window_s = 4.0
+    # One goodbye decision per farewell: every goodbye trigger inside the dedupe
+    # window shares the roll, so a turn plays the gesture once or never.
+    _last_goodbye_decision: tuple[bool, float] | None = None
 
     async def __call__(self, deps: ToolDependencies, **kwargs: Any) -> Dict[str, Any]:
         """Play a pre-recorded emotion."""
@@ -416,6 +425,24 @@ class PlayEmotion(Tool):
             if not emotion_name:
                 logger.info("play_emotion: %r did not resolve; using random curated", requested_emotion)
                 emotion_name = random_curated_emotion(emotion_names)
+
+            # Farewell gestures play occasionally. One roll per farewell, shared
+            # across the model call and the local spoken-word trigger inside the
+            # dedupe window; an explicit user command always plays.
+            if (
+                not kwargs.get("explicit_command")
+                and _normalize_emotion_key(str(requested_emotion or "")) == "goodbye"
+            ):
+                now = time.monotonic()
+                decision = PlayEmotion._last_goodbye_decision
+                if decision is not None and now - decision[1] < PlayEmotion._duplicate_queue_window_s:
+                    should_play = decision[0]
+                else:
+                    should_play = random.random() < GOODBYE_EMOTION_PROBABILITY
+                    PlayEmotion._last_goodbye_decision = (should_play, now)
+                if not should_play:
+                    logger.info("play_emotion: goodbye gesture skipped (occasional policy)")
+                    return {"status": "skipped", "emotion": emotion_name}
 
             movement_manager = deps.movement_manager
             emotion_move = EmotionQueueMove(emotion_name, library)
