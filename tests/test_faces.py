@@ -7,10 +7,12 @@ import pytest
 
 from my_conversation_app.faces import (
     MAX_FACES,
+    MAX_NICKNAMES_PER_FACE,
     MAX_EMBEDDINGS_PER_FACE,
     MAX_VOICE_EMBEDDINGS_PER_FACE,
     enroll_face,
     mark_face_seen,
+    set_face_nicknames,
     list_enrolled_faces,
     normalize_face_name,
     remove_enrolled_face,
@@ -194,3 +196,112 @@ def test_rename_and_mark_face_seen_keep_voice_embeddings(tmp_path: Path) -> None
     updated = list_enrolled_faces(tmp_path)[0]
     assert updated.name == "凯磊"
     assert updated.voice_embeddings == ((0.5, 0.5),)
+
+
+def test_nicknames_roundtrip_normalize_and_read_back(tmp_path: Path) -> None:
+    """Nicknames persist, normalize against the primary, and survive re-reads."""
+    enrolled = enroll_face(tmp_path, "凯蕾", [[1.0, 0.0]])
+    assert enrolled.face is not None
+
+    updated = set_face_nicknames(tmp_path, enrolled.face.id, [" 老凯 ", "凯蕾", "Kai", "kai", "小凯"])
+    assert updated is not None
+    # The primary itself and case-insensitive repeats drop out; the rest keep order.
+    assert updated.nicknames == ("老凯", "Kai", "小凯")
+    assert list_enrolled_faces(tmp_path)[0].nicknames == ("老凯", "Kai", "小凯")
+    raw = json.loads(faces_path_for_instance(tmp_path).read_text(encoding="utf-8"))
+    assert raw["faces"][0]["nicknames"] == ["老凯", "Kai", "小凯"]
+
+    # A pre-nickname store (no nicknames key) still loads with none, and a
+    # malformed one drops just the nicknames rather than the whole person.
+    legacy = json.dumps(
+        {
+            "version": 1,
+            "faces": [{"id": "f_old", "name": "旧数据", "embeddings": [[0.9, 0.1]], "createdAt": 1, "lastSeenAt": 2}],
+        }
+    )
+    faces_path_for_instance(tmp_path).write_text(legacy, encoding="utf-8")
+    assert list_enrolled_faces(tmp_path)[0].nicknames == ()
+    malformed = json.loads(legacy)
+    malformed["faces"][0]["nicknames"] = "老凯"
+    faces_path_for_instance(tmp_path).write_text(json.dumps(malformed), encoding="utf-8")
+    assert list_enrolled_faces(tmp_path)[0].nicknames == ()
+
+    # Nickname-less people keep the pre-nickname JSON shape.
+    faces_path_for_instance(tmp_path).write_text(legacy, encoding="utf-8")
+    mark_face_seen(tmp_path, "f_old")
+    assert "nicknames" not in json.loads(faces_path_for_instance(tmp_path).read_text(encoding="utf-8"))["faces"][0]
+
+
+def test_nicknames_cap_and_clear(tmp_path: Path) -> None:
+    """Extra nicknames past the cap drop; an empty list clears them."""
+    enrolled = enroll_face(tmp_path, "凯蕾", [[1.0, 0.0]])
+    assert enrolled.face is not None
+
+    overflow = set_face_nicknames(
+        tmp_path, enrolled.face.id, [f"称呼{index}" for index in range(MAX_NICKNAMES_PER_FACE + 2)]
+    )
+    assert overflow is not None
+    assert overflow.nicknames == tuple(f"称呼{index}" for index in range(MAX_NICKNAMES_PER_FACE))
+
+    cleared = set_face_nicknames(tmp_path, enrolled.face.id, [])
+    assert cleared is not None
+    assert cleared.nicknames == ()
+    assert set_face_nicknames(tmp_path, "missing", ["老凯"]) is None
+
+
+def test_address_names_stay_unique_across_people(tmp_path: Path) -> None:
+    """One address name answers to one person, whatever side it lives on."""
+    first = enroll_face(tmp_path, "凯蕾", [[1.0, 0.0]])
+    second = enroll_face(tmp_path, "李雷", [[0.0, 1.0]])
+    assert first.face is not None
+    assert second.face is not None
+    assert set_face_nicknames(tmp_path, first.face.id, ["老凯"]) is not None
+
+    # Enrolling a new person under someone's nickname is a duplicate.
+    assert enroll_face(tmp_path, "老凯", [[0.1, 0.2]]).reason == "duplicate_name"
+    # Renaming onto someone's nickname is a duplicate.
+    with pytest.raises(ValueError, match="duplicate_name"):
+        rename_enrolled_face(tmp_path, second.face.id, "老凯")
+    # Setting a nickname onto someone else's name or nickname is a duplicate.
+    with pytest.raises(ValueError, match="duplicate_name"):
+        set_face_nicknames(tmp_path, second.face.id, ["凯蕾"])
+    with pytest.raises(ValueError, match="duplicate_name"):
+        set_face_nicknames(tmp_path, second.face.id, ["二雷", "老凯"])
+
+    # Re-setting a person's own nicknames is idempotent, not a collision.
+    assert set_face_nicknames(tmp_path, first.face.id, ["老凯", "小凯"]).nicknames == ("老凯", "小凯")
+
+
+def test_face_updates_keep_nicknames(tmp_path: Path) -> None:
+    """Rename, seen-refresh, and voice appends must not drop nicknames."""
+    enrolled = enroll_face(tmp_path, "凯蕾", [[1.0, 0.0]])
+    assert enrolled.face is not None
+    face_id = enrolled.face.id
+    assert set_face_nicknames(tmp_path, face_id, ["老凯", "小凯"]) is not None
+
+    assert append_voice_embeddings(tmp_path, face_id, [[0.5, 0.5]]) is not None
+    mark_face_seen(tmp_path, face_id, [0.9, 0.1])
+    assert list_enrolled_faces(tmp_path)[0].nicknames == ("老凯", "小凯")
+
+    # Renaming onto the person's own nickname adopts it as the primary and
+    # drops the repeat, keeping the pool clean.
+    renamed = rename_enrolled_face(tmp_path, face_id, "老凯")
+    assert renamed is not None
+    assert renamed.name == "老凯"
+    assert renamed.nicknames == ("小凯",)
+
+
+def test_address_name_draws_from_the_whole_pool(tmp_path: Path) -> None:
+    """Addressing picks randomly; without nicknames the primary is the only pick."""
+    plain = enroll_face(tmp_path, "李雷", [[0.0, 1.0]])
+    assert plain.face is not None
+    assert all(plain.face.address_name() == "李雷" for _ in range(20))
+
+    nicknamed = enroll_face(tmp_path, "凯蕾", [[1.0, 0.0]])
+    assert nicknamed.face is not None
+    assert set_face_nicknames(tmp_path, nicknamed.face.id, ["老凯", "小凯"]) is not None
+    pool = {"凯蕾", "老凯", "小凯"}
+
+    draws = {list_enrolled_faces(tmp_path)[0].address_name() for _ in range(200)}
+    assert draws <= pool
+    assert draws == pool  # every name comes up eventually; 200 draws of 3 is safe

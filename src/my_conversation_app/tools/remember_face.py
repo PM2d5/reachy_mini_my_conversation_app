@@ -230,11 +230,16 @@ class RememberFace(Tool):
         """Return the same-named person when a fresh frame recognizes as them.
 
         The face check is the gate that keeps a stranger's 我叫X，记住我 from
-        gluing their voice onto someone else's record.
+        gluing their voice onto someone else's record. Nicknames match too, so
+        叫我老凯，记住我 from an enrolled person reaches their own record.
         """
-        normalized = normalize_face_name(name)
+        normalized = normalize_face_name(name).lower()
         existing = next(
-            (face for face in list_enrolled_faces(deps.instance_path) if face.name.lower() == normalized.lower()),
+            (
+                face
+                for face in list_enrolled_faces(deps.instance_path)
+                if normalized in {face.name.lower(), *(nickname.lower() for nickname in face.nicknames)}
+            ),
             None,
         )
         if existing is None:

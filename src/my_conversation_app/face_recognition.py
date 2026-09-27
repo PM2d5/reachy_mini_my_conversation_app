@@ -351,6 +351,8 @@ class FaceRecognitionService:
             embedding.tolist() if best_similarity >= threshold + self._PROGRESSIVE_MATCH_MARGIN else None
         )
         mark_face_seen(self._instance_path, best_face.id, progressive_embedding)
+        # A fresh pick per recognition: each session, camera check, or wake greet
+        # draws a different address name from the person's pool.
         return RecognitionOutcome(
-            name=best_face.name, face_id=best_face.id, similarity=best_similarity, face_detected=True
+            name=best_face.address_name(), face_id=best_face.id, similarity=best_similarity, face_detected=True
         )

@@ -255,7 +255,9 @@ class SpeakerRecognitionService:
                     continue
                 person_best = max(person_best, float(np.dot(embedding, reference_vector / reference_norm)))
             if face.voice_embeddings:
-                person_scores.append((person_best, face.name, face.id))
+                # The name rides along as a random address pick, so a speaker
+                # switch greets the person under any of their names.
+                person_scores.append((person_best, face.address_name(), face.id))
 
         if not person_scores:
             return SpeakerMatchOutcome(name=None, face_id=None, similarity=0.0)

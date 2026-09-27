@@ -36,6 +36,7 @@ def test_face_routes_list_rename_remove(tmp_path: Path) -> None:
     listed = _rpc_call(_client(tmp_path), "faces.list")["result"]["faces"]
     assert len(listed) == 1
     assert listed[0]["name"] == "凯蕾"
+    assert listed[0]["nicknames"] == []
     assert listed[0]["embeddingCount"] == 2
     assert "createdAt" in listed[0] and "lastSeenAt" in listed[0]
 
@@ -45,6 +46,30 @@ def test_face_routes_list_rename_remove(tmp_path: Path) -> None:
     removed = _rpc_call(_client(tmp_path), "faces.remove", {"id": enrolled.face.id})
     assert removed["result"] == {"ok": True, "removed": "蕾蕾"}
     assert _rpc_call(_client(tmp_path), "faces.list")["result"] == {"faces": []}
+
+
+def test_face_routes_set_nicknames(tmp_path: Path) -> None:
+    """SetNicknames replaces the pool, reports collisions, and validates input."""
+    first = enroll_face(tmp_path, "凯蕾", [[1.0, 0.0]])
+    second = enroll_face(tmp_path, "李雷", [[0.0, 1.0]])
+    assert first.face is not None
+    assert second.face is not None
+    client = _client(tmp_path)
+
+    set_result = _rpc_call(client, "faces.setNicknames", {"id": first.face.id, "nicknames": [" 老凯 ", "凯蕾"]})
+    assert set_result["result"]["face"]["nicknames"] == ["老凯"]
+
+    duplicate = _rpc_call(client, "faces.setNicknames", {"id": second.face.id, "nicknames": ["老凯"]})
+    assert duplicate["error"]["data"]["reason"] == "duplicate_name"
+
+    invalid = _rpc_call(client, "faces.setNicknames", {"id": first.face.id, "nicknames": "老凯"})
+    assert invalid["error"]["data"]["reason"] == "invalid_params"
+
+    missing = _rpc_call(client, "faces.setNicknames", {"id": "missing", "nicknames": []})
+    assert missing["error"]["data"]["reason"] == "face_not_found"
+
+    cleared = _rpc_call(client, "faces.setNicknames", {"id": first.face.id, "nicknames": []})
+    assert cleared["result"]["face"]["nicknames"] == []
 
 
 def test_face_routes_report_missing_and_duplicate_errors(tmp_path: Path) -> None:

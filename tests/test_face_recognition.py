@@ -10,7 +10,7 @@ from huggingface_hub import constants as hub_constants
 
 from reachy_mini.vision.face_detector import Face
 import my_conversation_app.face_recognition as face_recognition_mod
-from my_conversation_app.faces import MAX_EMBEDDINGS_PER_FACE, list_enrolled_faces
+from my_conversation_app.faces import MAX_EMBEDDINGS_PER_FACE, set_face_nicknames, list_enrolled_faces
 from my_conversation_app.config import config
 from my_conversation_app.face_recognition import (
     FaceRecognitionService,
@@ -170,6 +170,26 @@ def test_strong_match_progressively_grows_the_reference_set(tmp_path: Path, monk
         embedder._vectors.insert(0, [0.999, 0.01])
         service.recognize(_frame())
     assert len(list_enrolled_faces(tmp_path)[0].embeddings) == MAX_EMBEDDINGS_PER_FACE
+
+
+def test_recognize_picks_a_random_address_name(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """With nicknames enrolled, every recognition draws a name from the pool."""
+    monkeypatch.setattr(config, "FACE_MATCH_THRESHOLD", 0.5)
+    detector = FakeDetector([[_face()]])
+    embedder = FakeEmbedder([[1.0, 0.0], [1.0, 0.0], [0.99, 0.05]])
+    service = _service(tmp_path, detector, embedder)
+
+    enrolled = service.enroll("凯蕾", [_frame(), _frame()])
+    assert enrolled.face is not None
+    assert set_face_nicknames(tmp_path, enrolled.face.id, ["老凯", "小凯"]) is not None
+
+    pool = {"凯蕾", "老凯", "小凯"}
+    draws = set()
+    for _ in range(50):
+        outcome = service.recognize(_frame())
+        assert outcome.name in pool
+        draws.add(outcome.name)
+    assert draws == pool  # 50 draws of 3 names: every one comes up
 
 
 def test_enroll_requires_two_clean_frames_and_maps_store_reasons(tmp_path: Path) -> None:

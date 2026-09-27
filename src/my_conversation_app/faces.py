@@ -7,7 +7,7 @@ import logging
 import threading
 from pathlib import Path
 from dataclasses import dataclass
-from collections.abc import Mapping, Sequence
+from collections.abc import Mapping, Iterable, Sequence
 
 
 logger = logging.getLogger(__name__)
@@ -16,6 +16,7 @@ SCHEMA_VERSION = 1
 MAX_FACES = 10
 MAX_EMBEDDINGS_PER_FACE = 5
 MAX_VOICE_EMBEDDINGS_PER_FACE = 5
+MAX_NICKNAMES_PER_FACE = 4
 MAX_NAME_CHARS = 24
 FACES_FILENAME = "faces.v1.json"
 
@@ -32,6 +33,11 @@ class EnrolledFace:
     created_at: int
     last_seen_at: int
     voice_embeddings: tuple[tuple[float, ...], ...] = ()
+    nicknames: tuple[str, ...] = ()
+
+    def address_name(self) -> str:
+        """Return one name to call this person, picked at random from the pool."""
+        return random.choice((self.name, *self.nicknames))
 
     def to_json(self) -> dict[str, object]:
         """Return the persisted JSON shape."""
@@ -47,6 +53,9 @@ class EnrolledFace:
             payload["voiceEmbeddings"] = [
                 [round(value, 4) for value in embedding] for embedding in self.voice_embeddings
             ]
+        # Same omission rule: nickname-less people keep the pre-nickname shape.
+        if self.nicknames:
+            payload["nicknames"] = list(self.nicknames)
         return payload
 
 
@@ -71,6 +80,21 @@ def faces_path_for_instance(instance_path: str | Path | None = None) -> Path:
 def normalize_face_name(name: str) -> str:
     """Collapse whitespace and enforce the name length cap."""
     return " ".join(name.split()).strip()[:MAX_NAME_CHARS]
+
+
+def normalize_nicknames(nicknames: Iterable[str], primary_name: str) -> tuple[str, ...]:
+    """Normalize address names: drop empties, the primary itself, and repeats."""
+    primary = primary_name.lower()
+    normalized: list[str] = []
+    seen = {primary}
+    for nickname in nicknames:
+        candidate = normalize_face_name(nickname)
+        key = candidate.lower()
+        if not candidate or key in seen:
+            continue
+        normalized.append(candidate)
+        seen.add(key)
+    return tuple(normalized[:MAX_NICKNAMES_PER_FACE])
 
 
 def _make_id() -> str:
@@ -99,6 +123,11 @@ def _embeddings_from_json(value: object, cap: int) -> tuple[tuple[float, ...], .
     return tuple(embeddings[:cap])
 
 
+def _address_variants(face: EnrolledFace) -> set[str]:
+    """Every name this person answers to, lowercased, for uniqueness checks."""
+    return {face.name.lower(), *(nickname.lower() for nickname in face.nicknames)}
+
+
 def _face_from_json(value: object) -> EnrolledFace | None:
     if not isinstance(value, Mapping):
         return None
@@ -107,6 +136,7 @@ def _face_from_json(value: object) -> EnrolledFace | None:
     name = value.get("name")
     embeddings_value = value.get("embeddings")
     voice_embeddings_value = value.get("voiceEmbeddings")
+    nicknames_value = value.get("nicknames")
     created_at = value.get("createdAt")
     last_seen_at = value.get("lastSeenAt")
 
@@ -124,6 +154,12 @@ def _face_from_json(value: object) -> EnrolledFace | None:
     voice_embeddings = _embeddings_from_json(voice_embeddings_value, MAX_VOICE_EMBEDDINGS_PER_FACE)
     if voice_embeddings is None:
         return None
+    # nicknames is equally absent in pre-nickname stores; anything but a list of
+    # strings is corruption, and a malformed one drops just the nicknames.
+    if nicknames_value is not None and (
+        not isinstance(nicknames_value, list) or not all(isinstance(nickname, str) for nickname in nicknames_value)
+    ):
+        nicknames_value = None
 
     normalized = normalize_face_name(name)
     if not normalized:
@@ -136,6 +172,7 @@ def _face_from_json(value: object) -> EnrolledFace | None:
         created_at=int(created_at),
         last_seen_at=int(last_seen_at),
         voice_embeddings=voice_embeddings,
+        nicknames=normalize_nicknames(nicknames_value or (), normalized),
     )
 
 
@@ -205,7 +242,8 @@ def enroll_face(
     path = faces_path_for_instance(instance_path)
     with _STORE_LOCK:
         faces = _read_faces_file(path)
-        if any(face.name.lower() == normalized.lower() for face in faces):
+        # Uniqueness covers nicknames too: one address name answers to one person.
+        if any(normalized.lower() in _address_variants(face) for face in faces):
             return EnrollFaceResult(face=None, reason="duplicate_name")
         if len(faces) >= MAX_FACES:
             return EnrollFaceResult(face=None, reason="store_full")
@@ -231,18 +269,51 @@ def rename_enrolled_face(instance_path: str | Path | None, face_id: str, name: s
     path = faces_path_for_instance(instance_path)
     with _STORE_LOCK:
         faces = _read_faces_file(path)
-        if any(face.name.lower() == normalized.lower() and face.id != face_id for face in faces):
+        if any(normalized.lower() in _address_variants(face) for face in faces if face.id != face_id):
             raise ValueError("duplicate_name")
         renamed = [face for face in faces if face.id == face_id]
         if not renamed:
             return None
+        original = renamed[0]
         updated = EnrolledFace(
-            id=renamed[0].id,
+            id=original.id,
             name=normalized,
-            embeddings=renamed[0].embeddings,
-            created_at=renamed[0].created_at,
-            last_seen_at=renamed[0].last_seen_at,
-            voice_embeddings=renamed[0].voice_embeddings,
+            embeddings=original.embeddings,
+            created_at=original.created_at,
+            last_seen_at=original.last_seen_at,
+            voice_embeddings=original.voice_embeddings,
+            # A nickname matching the new primary is dropped, not kept as a repeat.
+            nicknames=normalize_nicknames(original.nicknames, normalized),
+        )
+        _write_faces_file(path, [updated if face.id == face_id else face for face in faces])
+        return updated
+
+
+def set_face_nicknames(
+    instance_path: str | Path | None,
+    face_id: str,
+    nicknames: Iterable[str],
+) -> EnrolledFace | None:
+    """Replace one person's extra address names; raises ValueError on a collision."""
+    path = faces_path_for_instance(instance_path)
+    with _STORE_LOCK:
+        faces = _read_faces_file(path)
+        targeted = [face for face in faces if face.id == face_id]
+        if not targeted:
+            return None
+        original = targeted[0]
+        normalized = normalize_nicknames(nicknames, original.name)
+        for candidate in normalized:
+            if any(candidate.lower() in _address_variants(face) for face in faces if face.id != face_id):
+                raise ValueError("duplicate_name")
+        updated = EnrolledFace(
+            id=original.id,
+            name=original.name,
+            embeddings=original.embeddings,
+            created_at=original.created_at,
+            last_seen_at=original.last_seen_at,
+            voice_embeddings=original.voice_embeddings,
+            nicknames=normalized,
         )
         _write_faces_file(path, [updated if face.id == face_id else face for face in faces])
         return updated
@@ -289,6 +360,7 @@ def mark_face_seen(
                     created_at=face.created_at,
                     last_seen_at=_now_ms(),
                     voice_embeddings=face.voice_embeddings,
+                    nicknames=face.nicknames,
                 )
             )
         _write_faces_file(path, updated_faces)
@@ -321,6 +393,7 @@ def append_voice_embeddings(
                 created_at=face.created_at,
                 last_seen_at=face.last_seen_at,
                 voice_embeddings=voice_embeddings,
+                nicknames=face.nicknames,
             )
             updated_faces.append(updated)
         if updated is None:

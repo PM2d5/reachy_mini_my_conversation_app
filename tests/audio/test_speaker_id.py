@@ -5,7 +5,7 @@ from pathlib import Path
 import numpy as np
 import pytest
 
-from my_conversation_app.faces import enroll_face, list_enrolled_faces, append_voice_embeddings
+from my_conversation_app.faces import enroll_face, set_face_nicknames, list_enrolled_faces, append_voice_embeddings
 from my_conversation_app.config import config
 from my_conversation_app.audio.speaker_id import (
     BUNDLED_SPEAKER_MODEL,
@@ -93,6 +93,21 @@ def test_recognize_matches_enrolled_voice_above_threshold(tmp_path: Path) -> Non
     assert matched.similarity == pytest.approx(1.0)
 
     assert service.recognize(_negative_utterance()).name is None
+
+
+def test_recognize_draws_the_name_from_the_address_pool(tmp_path: Path) -> None:
+    """A voice match names the person by any of their address names."""
+    service, _ = _service_with_voice(tmp_path)
+    enrolled = list_enrolled_faces(tmp_path)[0]
+    assert set_face_nicknames(tmp_path, enrolled.id, ["老凯", "小凯"]) is not None
+
+    pool = {"凯蕾", "老凯", "小凯"}
+    draws = set()
+    for _ in range(50):
+        outcome = service.recognize(_positive_utterance())
+        assert outcome.name in pool
+        draws.add(outcome.name)
+    assert draws == pool  # 50 draws of 3 names: every one comes up
 
 
 def test_recognize_skips_utterances_under_one_second_of_speech(tmp_path: Path) -> None:

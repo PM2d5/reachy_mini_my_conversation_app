@@ -1,6 +1,6 @@
 /** Faces view: manage the people Reachy recognizes by face. */
 
-import { describeError, listFaces, removeFace, renameFace } from "../api.js";
+import { describeError, listFaces, removeFace, renameFace, setFaceNicknames } from "../api.js";
 import { h } from "../ui.js";
 import { confirmDialog } from "../components/confirm-dialog.js";
 
@@ -11,7 +11,10 @@ function formatDate(ms) {
 }
 
 function describeFace(face) {
-  const details = [`${Number(face.embeddingCount) || 0} reference photos`];
+  const details = [];
+  const nicknames = Array.isArray(face.nicknames) ? face.nicknames.filter(Boolean) : [];
+  if (nicknames.length) details.push(`Also called ${nicknames.join(" · ")}`);
+  details.push(`${Number(face.embeddingCount) || 0} reference photos`);
   const lastSeen = formatDate(face.lastSeenAt);
   if (lastSeen) details.push(`Last seen ${lastSeen}`);
   return details.join(" · ");
@@ -67,6 +70,7 @@ export async function mountFacesView({ outlet, signal }) {
     }
     for (const face of faces) {
       const renameButton = h("button", { type: "button", class: "btn btn--ghost" }, "Rename");
+      const nicknamesButton = h("button", { type: "button", class: "btn btn--ghost" }, "Nicknames");
       const removeButton = h("button", { type: "button", class: "btn btn--ghost" }, "Remove");
       const row = h(
         "div",
@@ -77,11 +81,15 @@ export async function mountFacesView({ outlet, signal }) {
           h("strong", { class: "settings-tool-space-name" }, face.name),
           h("span", { class: "settings-tool-space-meta" }, describeFace(face))
         ),
-        h("div", { class: "settings-tool-space-controls" }, renameButton, removeButton)
+        h("div", { class: "settings-tool-space-controls" }, renameButton, nicknamesButton, removeButton)
       );
 
       renameButton.addEventListener("click", () => {
         if (!busy) startRename(row, face);
+      });
+
+      nicknamesButton.addEventListener("click", () => {
+        if (!busy) startNicknames(row, face);
       });
 
       removeButton.addEventListener("click", async () => {
@@ -156,6 +164,64 @@ export async function mountFacesView({ outlet, signal }) {
       } catch (error) {
         if (signal?.aborted) return;
         status.textContent = `Failed to rename: ${describeError(error)}`;
+        status.classList.add("is-error");
+        refresh();
+      } finally {
+        if (!signal?.aborted) setBusy(false);
+      }
+    });
+  }
+
+  function startNicknames(row, face) {
+    const current = Array.isArray(face.nicknames) ? face.nicknames.filter(Boolean) : [];
+    const input = h("input", {
+      type: "text",
+      class: "settings-input",
+      value: current.join(", "),
+      maxlength: "110",
+      placeholder: "e.g. 老凯, Kai",
+      "aria-label": `Extra names to call ${face.name}, comma-separated`,
+      autocomplete: "off",
+    });
+    const cancelButton = h("button", { type: "button", class: "btn btn--ghost" }, "Cancel");
+    const form = h(
+      "form",
+      { class: "settings-tool-space-controls" },
+      input,
+      h("button", { type: "submit", class: "btn btn--primary" }, "Save"),
+      cancelButton
+    );
+    row.replaceChild(form, row.lastChild);
+    input.focus();
+
+    cancelButton.addEventListener("click", () => refresh());
+
+    form.addEventListener("submit", async (event) => {
+      event.preventDefault();
+      const nicknames = input.value
+        .split(/[,，、]/)
+        .map((part) => part.trim())
+        .filter(Boolean);
+      const unchanged =
+        nicknames.length === current.length && nicknames.every((name, index) => name === current[index]);
+      if (unchanged) {
+        refresh();
+        return;
+      }
+      status.classList.remove("is-error");
+      setBusy(true);
+      try {
+        const result = await setFaceNicknames(face.id, nicknames);
+        if (signal?.aborted) return;
+        // The server dedupes and caps; report what was actually saved.
+        const saved = Array.isArray(result?.face?.nicknames) ? result.face.nicknames : nicknames;
+        status.textContent = saved.length
+          ? `Reachy now calls ${face.name} by ${[face.name, ...saved].join(", ")} at random.`
+          : `Cleared the extra names for ${face.name}.`;
+        await refresh();
+      } catch (error) {
+        if (signal?.aborted) return;
+        status.textContent = `Failed to save nicknames: ${describeError(error)}`;
         status.classList.add("is-error");
         refresh();
       } finally {

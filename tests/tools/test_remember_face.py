@@ -266,6 +266,12 @@ def _existing_person() -> EnrolledFace:
     return EnrolledFace(id="f_1", name="凯蕾", embeddings=((1.0, 0.0),), created_at=1, last_seen_at=1)
 
 
+def _existing_person_with_nickname() -> EnrolledFace:
+    return EnrolledFace(
+        id="f_1", name="凯蕾", embeddings=((1.0, 0.0),), created_at=1, last_seen_at=1, nicknames=("老凯",)
+    )
+
+
 @pytest.mark.asyncio
 async def test_reenrollment_attaches_voice_to_matching_existing_person(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
@@ -292,6 +298,38 @@ async def test_reenrollment_attaches_voice_to_matching_existing_person(
     deps.get_last_user_speech = lambda: (16000, np.ones(32000, dtype=np.int16))
 
     result = await RememberFace()(deps, name="凯蕾")
+
+    assert result["saved"] == "凯蕾"
+    assert result["face_id"] == "f_1"
+    assert result["voice_enrolled"] is True
+    assert appended == [(tmp_path, "f_1", [[0.25, 1.0]])]
+
+
+@pytest.mark.asyncio
+async def test_reenrollment_by_nickname_attaches_voice_to_that_person(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """叫我老凯，记住我 reaches the person whose nickname 老凯 is, not a new record."""
+    appended: list[tuple[object, str, list[list[float]]]] = []
+    monkeypatch.setattr(
+        remember_face_mod,
+        "append_voice_embeddings",
+        lambda instance, face_id, embeddings: (
+            appended.append((instance, face_id, embeddings))
+            or EnrolledFace(id=face_id, name="凯蕾", embeddings=(), created_at=1, last_seen_at=1)
+        ),
+    )
+    monkeypatch.setattr(remember_face_mod, "list_enrolled_faces", lambda _instance: [_existing_person_with_nickname()])
+    recognizer = FakeRecognizer(
+        EnrollmentOutcome(face=None, reason="duplicate_name"),
+        recognition=RecognitionOutcome(name="凯蕾", face_id="f_1", similarity=0.9, face_detected=True),
+    )
+    deps = _deps(recognizer)
+    deps.instance_path = tmp_path
+    deps.speaker_recognizer = FakeSpeakerRecognizer(np.array([0.25, 1.0], dtype=np.float32))
+    deps.get_last_user_speech = lambda: (16000, np.ones(32000, dtype=np.int16))
+
+    result = await RememberFace()(deps, name="老凯")
 
     assert result["saved"] == "凯蕾"
     assert result["face_id"] == "f_1"

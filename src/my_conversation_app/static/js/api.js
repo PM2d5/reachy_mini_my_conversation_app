@@ -158,6 +158,7 @@ export const resetProfileTools = (profile) =>
 
 export const listFaces = () => rpcCall("faces.list");
 export const renameFace = (id, name) => rpcCall("faces.rename", { id, name });
+export const setFaceNicknames = (id, nicknames) => rpcCall("faces.setNicknames", { id, nicknames });
 export const removeFace = (id) => rpcCall("faces.remove", { id });
 
 /** Backend error codes that need friendlier copy than the raw code. */
