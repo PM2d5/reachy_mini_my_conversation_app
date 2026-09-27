@@ -13,9 +13,11 @@ from my_conversation_app.moves import (
     STANDBY_ANTENNAS,
     STANDBY_HEAD_POSE,
     BUSY_SWAY_AMPLITUDE,
+    STANDBY_MOVE_GRACE_S,
+    BreathingMove,
     MovementManager,
 )
-from my_conversation_app.dance_emotion_moves import EmotionQueueMove
+from my_conversation_app.dance_emotion_moves import LEAD_IN_DURATION_S, GotoQueueMove, EmotionQueueMove
 
 
 class _FakeMove:
@@ -227,6 +229,204 @@ def test_moves_queued_during_standby_are_dropped() -> None:
     manager._handle_command("set_standby", True, manager._now())
     (tuck_move,) = manager.move_queue
 
-    manager._handle_command("queue_move", _FakeMove(np.eye(4)), manager._now())
+    # A real wrapper move, not a bare stub: queue_move only accepts Move instances.
+    recorded = MagicMock()
+    recorded.get.return_value = _FakeMove(np.eye(4))
+    manager._handle_command("queue_move", EmotionQueueMove("goodbye", recorded), manager._now())
 
     assert list(manager.move_queue) == [tuck_move]
+
+
+def test_emotion_move_eases_in_from_the_captured_start_pose() -> None:
+    """The recording's posed first frame must not step the head: it blends in over the lead-in."""
+    recorded_head = create_head_pose(0, 0, 0, 0, 0, 14, degrees=True)
+    recorded = MagicMock()
+    recorded.get.return_value = _FakeMove(recorded_head)
+    move = EmotionQueueMove("goodbye", recorded)
+    start_head = create_head_pose(0, 0, 0, 0, 0, -20, degrees=True)
+    move.start_pose = (start_head, (0.1, -0.1), 0.05)
+
+    head, antennas, body_yaw = move.evaluate(0.0)
+    assert np.allclose(head, start_head)
+    assert np.allclose(antennas, [0.1, -0.1])
+    assert body_yaw == pytest.approx(0.05)
+
+    # Smoothstep midpoint: halfway between the start pose and the recording.
+    head, antennas, _body_yaw = move.evaluate(LEAD_IN_DURATION_S / 2)
+    assert np.degrees(np.arctan2(head[1, 0], head[0, 0])) == pytest.approx(-3.0, abs=0.1)
+    assert antennas[0] == pytest.approx(0.05)
+
+    head, antennas, body_yaw = move.evaluate(LEAD_IN_DURATION_S + 0.01)
+    assert np.allclose(head, recorded_head)
+    assert np.allclose(antennas, [0.0, 0.0])
+    assert body_yaw == pytest.approx(0.0)
+
+
+def test_started_emotion_seeds_lead_in_from_the_commanded_pose() -> None:
+    """Popping a queued emotion captures the commanded pose as the lead-in source."""
+    robot = MagicMock()
+    manager = MovementManager(robot)
+    commanded_head = create_head_pose(0, 0, 0, 0, 0, -20, degrees=True)
+    manager._last_commanded_pose = (commanded_head, (0.05, -0.05), 0.1)
+    recorded = MagicMock()
+    emotion = EmotionQueueMove("goodbye", recorded)
+    manager.move_queue.append(emotion)
+
+    manager._manage_move_queue(manager._now())
+
+    assert manager.state.current_move is emotion
+    assert emotion.start_pose is not None
+    start_head, start_antennas, start_body_yaw = emotion.start_pose
+    assert np.allclose(start_head, commanded_head)
+    assert start_antennas == (0.05, -0.05)
+    assert start_body_yaw == 0.1
+
+    # Under a look-at anchor the blend starts from identity: the anchor
+    # composition already places the head at the anchor.
+    anchored = EmotionQueueMove("goodbye", recorded)
+    manager._track_anchor = create_head_pose(0, 0, 0, 0, 0, 20, degrees=True)
+    manager.state.current_move = None
+    manager.move_queue.append(anchored)
+    manager._manage_move_queue(manager._now())
+    assert anchored.start_pose is not None
+    assert np.allclose(anchored.start_pose[0], np.eye(4))
+
+
+def test_standby_gives_a_playing_move_a_capped_grace_before_tucking() -> None:
+    """The goodbye emotion playing when the keyword lands keeps the floor; the tuck cuts in late."""
+    robot = MagicMock()
+    robot.get_current_head_pose.return_value = create_head_pose(0, 0, 0, 0, 0, 0, degrees=True)
+    robot.get_current_joint_positions.return_value = ([0.0] * 7, [0.0, 0.0])
+    manager = MovementManager(robot)
+    goodbye = _FakeMove(np.eye(4))
+    goodbye.duration = 5.6
+    now = manager._now()
+    manager.state.current_move = goodbye
+    manager.state.move_start_time = now - 0.2
+
+    manager._handle_command("set_standby", True, now)
+
+    # The move keeps playing; the tuck waits out a grace capped at STANDBY_MOVE_GRACE_S.
+    assert manager.state.current_move is goodbye
+    assert not manager.move_queue
+    deadline = manager._standby_tuck_at
+    assert deadline is not None
+    assert deadline == pytest.approx(now + STANDBY_MOVE_GRACE_S)
+
+    # Past the deadline the tuck replaces the lingering move from the live pose.
+    manager._manage_move_queue(deadline + 0.05)
+    assert manager._standby_tuck_at is None
+    assert isinstance(manager.state.current_move, GotoQueueMove)
+    assert not manager.move_queue
+
+
+def test_standby_tucks_once_a_short_move_finishes_naturally() -> None:
+    """A move outliving the keyword by less than the cap is left to finish on its own."""
+    robot = MagicMock()
+    robot.get_current_head_pose.return_value = create_head_pose(0, 0, 0, 0, 0, 0, degrees=True)
+    robot.get_current_joint_positions.return_value = ([0.0] * 7, [0.0, 0.0])
+    manager = MovementManager(robot)
+    farewell = _FakeMove(np.eye(4))
+    farewell.duration = 0.5
+    now = manager._now()
+    manager.state.current_move = farewell
+    manager.state.move_start_time = now - 0.2
+
+    manager._handle_command("set_standby", True, now)
+
+    deadline = manager._standby_tuck_at
+    assert deadline is not None
+    assert deadline == pytest.approx(now + 0.3)  # the remaining 0.3 s, under the cap
+
+    # The move ends before its deadline; the tuck starts on that same tick.
+    manager._manage_move_queue(now + 0.4)
+    assert manager._standby_tuck_at is None
+    assert isinstance(manager.state.current_move, GotoQueueMove)
+
+
+def test_standby_tucks_immediately_while_only_breathing_is_active() -> None:
+    """Idle standby (breathing, no real move) must not wait out a grace window."""
+    robot = MagicMock()
+    robot.get_current_head_pose.return_value = create_head_pose(0, 0, 0, 0, 0, 0, degrees=True)
+    robot.get_current_joint_positions.return_value = ([0.0] * 7, [0.0, 0.0])
+    manager = MovementManager(robot)
+    manager.state.current_move = BreathingMove(np.eye(4, dtype=np.float32), (0.0, 0.0))
+
+    manager._handle_command("set_standby", True, manager._now())
+
+    assert manager._standby_tuck_at is None
+    (tuck_move,) = manager.move_queue
+    assert manager.state.current_move is None
+    assert np.allclose(tuck_move.target_head_pose[:3, :3], np.eye(3))
+
+
+def test_wake_during_the_grace_window_cancels_the_deferred_tuck() -> None:
+    """Waking while the goodbye emotion still plays lifts the head immediately, grace forgotten."""
+    robot = MagicMock()
+    robot.get_current_head_pose.return_value = create_head_pose(0, 0, 0, 0, 0, 0, degrees=True)
+    robot.get_current_joint_positions.return_value = ([0.0] * 7, [0.0, 0.0])
+    manager = MovementManager(robot)
+    goodbye = _FakeMove(np.eye(4))
+    goodbye.duration = 5.6
+    now = manager._now()
+    manager.state.current_move = goodbye
+    manager.state.move_start_time = now - 0.2
+
+    manager._handle_command("set_standby", True, now)
+    assert manager._standby_tuck_at is not None
+
+    manager._handle_command("set_standby", False, manager._now())
+
+    assert manager._standby_tuck_at is None
+    assert manager.state.current_move is None
+    (lift_move,) = manager.move_queue
+    assert lift_move.target_antennas == NEUTRAL_ANTENNAS
+
+
+def test_goodbye_sequence_never_steps_the_commanded_head_pose() -> None:
+    """End-to-end over the working loop: emotion start + standby tuck command no single-tick jump."""
+    robot = MagicMock()
+    commanded_heads: list[np.ndarray] = []
+
+    def record_set_target(head: np.ndarray, antennas: object, body_yaw: object) -> None:
+        commanded_heads.append(head.copy())
+
+    robot.set_target.side_effect = record_set_target
+
+    # A faithful robot follows the commanded stream closely (impedance control),
+    # so its sensors report the last commanded pose back.
+    def current_sensor_head() -> np.ndarray:
+        return commanded_heads[-1] if commanded_heads else np.eye(4, dtype=np.float32)
+
+    robot.get_current_head_pose.side_effect = current_sensor_head
+    robot.get_current_joint_positions.return_value = ([0.0] * 7, [0.0, 0.0])
+
+    manager = MovementManager(robot)
+    manager.start()
+    try:
+        # The goodbye emotion recording starts with its head yawed 14° away.
+        recorded = MagicMock()
+        recorded.get.return_value = _FakeMove(create_head_pose(0, 0, 0, 0, 0, 14, degrees=True))
+        manager.queue_move(EmotionQueueMove("goodbye", recorded))
+        assert _wait_for(lambda: manager.state.current_move is not None)
+        assert _wait_for(lambda: len(commanded_heads) >= 12)
+
+        # The goodbye keyword lands while the emotion plays; the tuck takes over
+        # once the (forced) grace deadline passes.
+        manager.set_standby(True)
+        assert _wait_for(lambda: manager._standby_tuck_at is not None)
+        manager._standby_tuck_at = manager._now() - 0.01
+        assert _wait_for(
+            lambda: manager._standby_tuck_at is None and isinstance(manager.state.current_move, GotoQueueMove)
+        )
+        assert _wait_for(lambda: len(commanded_heads) >= 24)
+    finally:
+        manager.stop(reset_to_neutral=False)
+
+    # Before the fix the recording's first frame stepped the commanded head by
+    # its full ~14° in one 60 Hz tick; blending keeps every step in the low degrees.
+    max_step_deg = max(
+        np.degrees(np.arccos(np.clip((np.trace(prev[:3, :3].T @ cur[:3, :3]) - 1) / 2, -1, 1)))
+        for prev, cur in zip(commanded_heads, commanded_heads[1:])
+    )
+    assert max_step_deg < 5.0
