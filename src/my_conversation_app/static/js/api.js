@@ -160,6 +160,10 @@ export const listFaces = () => rpcCall("faces.list");
 export const renameFace = (id, name) => rpcCall("faces.rename", { id, name });
 export const setFaceNicknames = (id, nicknames) => rpcCall("faces.setNicknames", { id, nicknames });
 export const removeFace = (id) => rpcCall("faces.remove", { id });
+// The first call after startup can wait on model loading, so it outlives the default timeout.
+export const inspectFaceCamera = () => rpcCall("faces.inspectCamera", {}, { timeoutMs: 20000 });
+export const labelFace = (frameId, faceIndex, name) =>
+  rpcCall("faces.labelFace", { frameId, faceIndex, name }, { timeoutMs: 20000 });
 
 /** Backend error codes that need friendlier copy than the raw code. */
 const ERROR_MESSAGES = Object.freeze({

@@ -749,7 +749,13 @@ class LocalStream:
             logger.exception("Failed to register profile tool methods; personality tool settings will be unavailable")
 
         try:
-            register_face_methods(rpc, instance_path=self._instance_path)
+            register_face_methods(
+                rpc,
+                instance_path=self._instance_path,
+                # Resolved per call: the handler (and its camera) is rebuilt on
+                # backend switches, so a stale reference must never be captured.
+                get_camera_deps=lambda: self.handler.deps if self.handler is not None else None,
+            )
         except Exception:
             logger.exception("Failed to register face methods; the face management UI will be unavailable")
 

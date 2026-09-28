@@ -76,6 +76,16 @@ class RecognitionOutcome:
 
 
 @dataclass(frozen=True)
+class FaceInspection:
+    """One detected face matched read-only against every enrolled person."""
+
+    bbox: tuple[float, float, float, float]
+    # (name, best cosine) per person, strongest first — the runner-up visibility
+    # recognize() lacks is the whole point of this report.
+    scores: tuple[tuple[str, float], ...]
+
+
+@dataclass(frozen=True)
 class EnrollmentOutcome:
     """Result of enrolling a person from captured frames."""
 
@@ -217,13 +227,33 @@ def _construct_detector() -> FaceDetector:
         hub_constants.HF_HUB_OFFLINE = was_offline
 
 
+def _best_match_per_person(
+    embedding: NDArray[np.float32],
+    enrolled: Sequence[EnrolledFace],
+) -> list[tuple[EnrolledFace, float]]:
+    """Best cosine of one embedding against each person's references, strongest first."""
+    scored: list[tuple[EnrolledFace, float]] = []
+    for face in enrolled:
+        best = 0.0
+        for reference in face.embeddings:
+            reference_vector = np.asarray(reference, dtype=np.float32)
+            reference_norm = np.linalg.norm(reference_vector)
+            if reference_norm == 0.0:
+                continue
+            best = max(best, float(np.dot(embedding, reference_vector / reference_norm)))
+        scored.append((face, best))
+    scored.sort(key=lambda item: item[1], reverse=True)
+    return scored
+
+
 class FaceRecognitionService:
     """Recognize the facing person against the enrolled-faces store."""
 
     # A match this much stronger than the threshold also feeds the frame's
     # embedding back as an extra reference, so haircuts and glasses never make
-    # an enrollment go stale.
-    _PROGRESSIVE_MATCH_MARGIN = 0.08
+    # an enrollment go stale. Public: the camera-inspection route ships it to
+    # the UI so the "this frame would be saved" zone is visible.
+    PROGRESSIVE_MATCH_MARGIN = 0.08
 
     def __init__(
         self,
@@ -330,25 +360,16 @@ class FaceRecognitionService:
         if embedding is None:
             return RecognitionOutcome(name=None, face_id=None, similarity=0.0, face_detected=False)
 
-        best_face: EnrolledFace | None = None
-        best_similarity = 0.0
-        for face in list_enrolled_faces(self._instance_path):
-            for reference in face.embeddings:
-                reference_vector = np.asarray(reference, dtype=np.float32)
-                reference_norm = np.linalg.norm(reference_vector)
-                if reference_norm == 0.0:
-                    continue
-                similarity = float(np.dot(embedding, reference_vector / reference_norm))
-                if similarity > best_similarity:
-                    best_similarity = similarity
-                    best_face = face
+        scored = _best_match_per_person(embedding, list_enrolled_faces(self._instance_path))
+        # Stable sort keeps the earliest-enrolled winner on exact ties.
+        best_face, best_similarity = scored[0] if scored else (None, 0.0)
 
         threshold = config.FACE_MATCH_THRESHOLD
         if best_face is None or best_similarity < threshold:
             return RecognitionOutcome(name=None, face_id=None, similarity=best_similarity, face_detected=True)
 
         progressive_embedding = (
-            embedding.tolist() if best_similarity >= threshold + self._PROGRESSIVE_MATCH_MARGIN else None
+            embedding.tolist() if best_similarity >= threshold + self.PROGRESSIVE_MATCH_MARGIN else None
         )
         mark_face_seen(self._instance_path, best_face.id, progressive_embedding)
         # A fresh pick per recognition: each session, camera check, or wake greet
@@ -356,3 +377,71 @@ class FaceRecognitionService:
         return RecognitionOutcome(
             name=best_face.address_name(), face_id=best_face.id, similarity=best_similarity, face_detected=True
         )
+
+    def inspect_faces(self, frame_bgr: NDArray[np.uint8]) -> list[FaceInspection]:
+        """Report every detected face's similarity to each enrolled person, writing nothing.
+
+        The debug camera panel runs on this: unlike recognize(), it observes the
+        matcher without feeding references back — a diagnostic tool must never
+        poison the very store it exists to inspect.
+        """
+        if not self.available or self._detector is None or self._embedder is None:
+            return []
+        enrolled = list_enrolled_faces(self._instance_path)
+        inspections: list[FaceInspection] = []
+        for face in self._detector.detect(frame_bgr):
+            try:
+                embedding = self._embedder.embed(align_face(frame_bgr, face))
+            except np.linalg.LinAlgError:
+                logger.debug("Skipping a face whose landmarks cannot be aligned", exc_info=True)
+                continue
+            inspections.append(
+                FaceInspection(
+                    bbox=face.bbox,
+                    scores=tuple(
+                        (person.name, similarity) for person, similarity in _best_match_per_person(embedding, enrolled)
+                    ),
+                )
+            )
+        return inspections
+
+    def enroll_face_at(self, frame_bgr: NDArray[np.uint8], face_index: int, name: str) -> EnrollmentOutcome:
+        """Enroll one specific detected face under a name, appending when the person exists.
+
+        The debug panel's manual label action: an existing person (matched by
+        name or nickname) gains the frozen frame's embedding as a fresh
+        reference instead of a duplicate rejection, so a human curator can
+        repair a reference set frame by frame.
+        """
+        if not self.available or self._detector is None or self._embedder is None:
+            return EnrollmentOutcome(face=None, reason="unavailable")
+        faces = self._detector.detect(frame_bgr)
+        if not 0 <= face_index < len(faces):
+            return EnrollmentOutcome(face=None, reason="face_not_found")
+        try:
+            embedding = self._embedder.embed(align_face(frame_bgr, faces[face_index]))
+        except np.linalg.LinAlgError:
+            logger.debug("Skipping a face whose landmarks cannot be aligned", exc_info=True)
+            return EnrollmentOutcome(face=None, reason="alignment_failed")
+
+        lowered = name.strip().lower()
+        existing = next(
+            (
+                face
+                for face in list_enrolled_faces(self._instance_path)
+                if lowered in {face.name.lower(), *(nickname.lower() for nickname in face.nicknames)}
+            ),
+            None,
+        )
+        if existing is not None:
+            mark_face_seen(self._instance_path, existing.id, embedding.tolist())
+            updated = next(
+                (face for face in list_enrolled_faces(self._instance_path) if face.id == existing.id),
+                existing,
+            )
+            logger.info("Appended a face reference to %r via manual label", existing.name)
+            return EnrollmentOutcome(face=updated, reason=None)
+        result = enroll_face(self._instance_path, name, [embedding.tolist()])
+        if result.face is not None:
+            logger.info("Labeled a new face %r from one frozen frame", result.face.name)
+        return EnrollmentOutcome(face=result.face, reason=result.reason)

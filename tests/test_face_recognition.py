@@ -10,7 +10,12 @@ from huggingface_hub import constants as hub_constants
 
 from reachy_mini.vision.face_detector import Face
 import my_conversation_app.face_recognition as face_recognition_mod
-from my_conversation_app.faces import MAX_EMBEDDINGS_PER_FACE, set_face_nicknames, list_enrolled_faces
+from my_conversation_app.faces import (
+    MAX_EMBEDDINGS_PER_FACE,
+    enroll_face,
+    set_face_nicknames,
+    list_enrolled_faces,
+)
 from my_conversation_app.config import config
 from my_conversation_app.face_recognition import (
     FaceRecognitionService,
@@ -208,6 +213,83 @@ def test_enroll_requires_two_clean_frames_and_maps_store_reasons(tmp_path: Path)
     empty_service = _service(tmp_path, empty_detector, FakeEmbedder([[1.0, 0.0]]))
     too_few = empty_service.enroll("新人物", [_frame(), _frame()])
     assert too_few.reason == "too_few_faces"
+
+
+def test_inspect_faces_scores_every_person_and_writes_nothing(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """inspect_faces reports each face's score against every person, touching no store."""
+    detector = FakeDetector([[_face((10.0, 10.0, 60.0, 70.0)), _face((150.0, 10.0, 60.0, 70.0))]])
+    embedder = FakeEmbedder(
+        [
+            [1.0, 0.0],
+            [1.0, 0.0],  # enroll 凯蕾
+            [0.0, 1.0],
+            [0.0, 1.0],  # enroll 李雷
+            [0.8, 0.6],  # first inspected face leans toward 凯蕾
+            [0.6, 0.8],  # second inspected face leans toward 李雷
+        ]
+    )
+    service = _service(tmp_path, detector, embedder)
+    assert service.enroll("凯蕾", [_frame(), _frame()]).face is not None
+    assert service.enroll("李雷", [_frame(), _frame()]).face is not None
+
+    def _no_writes(*args: Any, **kwargs: Any) -> None:
+        raise AssertionError("inspect_faces must never write to the faces store")
+
+    monkeypatch.setattr(face_recognition_mod, "mark_face_seen", _no_writes)
+    before = [(face.name, len(face.embeddings), face.last_seen_at) for face in list_enrolled_faces(tmp_path)]
+    inspections = service.inspect_faces(_frame())
+    after = [(face.name, len(face.embeddings), face.last_seen_at) for face in list_enrolled_faces(tmp_path)]
+
+    assert [inspection.bbox for inspection in inspections] == [
+        (10.0, 10.0, 60.0, 70.0),
+        (150.0, 10.0, 60.0, 70.0),
+    ]
+    assert inspections[0].scores[0][0] == "凯蕾"  # strongest first
+    assert dict(inspections[0].scores)["凯蕾"] == pytest.approx(0.8)
+    assert dict(inspections[0].scores)["李雷"] == pytest.approx(0.6)
+    assert inspections[1].scores[0][0] == "李雷"
+    assert dict(inspections[1].scores)["李雷"] == pytest.approx(0.8)
+    assert after == before
+
+
+def test_inspect_faces_without_models_or_faces_returns_empty(tmp_path: Path) -> None:
+    """An unavailable service or a faceless frame yields an empty report."""
+    unavailable = FaceRecognitionService(tmp_path)
+    assert unavailable.inspect_faces(_frame()) == []
+
+    empty = _service(tmp_path, FakeDetector([]), FakeEmbedder([[1.0, 0.0]]))
+    assert empty.inspect_faces(_frame()) == []
+
+
+def test_enroll_face_at_appends_to_existing_and_creates_new(tmp_path: Path) -> None:
+    """Manual labeling appends a reference to a known person and enrolls unknown names."""
+    seeded = enroll_face(tmp_path, "凯蕾", [[1.0, 0.0]])
+    assert seeded.face is not None
+    detector = FakeDetector([[_face((10.0, 10.0, 60.0, 70.0)), _face((150.0, 10.0, 60.0, 70.0))]])
+    embedder = FakeEmbedder([[0.9, 0.1]])
+    service = _service(tmp_path, detector, embedder)
+
+    appended = service.enroll_face_at(_frame(), 1, "凯蕾")
+    assert appended.face is not None
+    assert appended.face.name == "凯蕾"
+    assert appended.face.id == seeded.face.id
+    kaili = next(face for face in list_enrolled_faces(tmp_path) if face.name == "凯蕾")
+    assert len(kaili.embeddings) == 2
+
+    created = service.enroll_face_at(_frame(), 0, "李雷")
+    assert created.face is not None
+    assert created.face.name == "李雷"
+    assert len(created.face.embeddings) == 1
+
+    # A nickname reaches its owner's record instead of creating a namesake.
+    set_face_nicknames(tmp_path, seeded.face.id, ["老凯"])
+    via_nickname = service.enroll_face_at(_frame(), 0, "老凯")
+    assert via_nickname.face is not None
+    assert via_nickname.face.id == seeded.face.id
+
+    out_of_range = service.enroll_face_at(_frame(), 5, "王五")
+    assert out_of_range.face is None
+    assert out_of_range.reason == "face_not_found"
 
 
 def test_select_face_prefers_largest_then_most_central() -> None:
