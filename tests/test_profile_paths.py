@@ -301,6 +301,26 @@ def test_default_english_lists_directly_after_default(tmp_path: Path, monkeypatc
     assert list_personalities() == ["default", "default_english", "bored_teenager"]
 
 
+def test_kids_playmate_lists_third(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """kids_playmate stays pinned behind default and default_english."""
+    profiles_root = tmp_path / "profiles"
+    write_profile("default", profiles_root / "default", "Default persona.", ["dance"])
+    write_profile("default_english", profiles_root / "default_english", "English twin persona.", ["dance"])
+    write_profile("kids_playmate", profiles_root / "kids_playmate", "Kid persona.", ["dance"])
+    write_profile("bored_teenager", profiles_root / "bored_teenager", "Bored persona.", ["dance"])
+    write_profile("victorian_butler", profiles_root / "victorian_butler", "Butler persona.", ["dance"])
+    monkeypatch.setattr(config, "PROFILES_DIRECTORY", profiles_root)
+    monkeypatch.setattr(config, "INSTANCE_PATH", tmp_path)
+
+    assert list_personalities() == [
+        "default",
+        "default_english",
+        "kids_playmate",
+        "bored_teenager",
+        "victorian_butler",
+    ]
+
+
 def test_packaged_profiles_win_outside_source_checkout(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     """Installed builds should use packaged profiles, not an unrelated sibling folder."""
     unrelated_profiles = tmp_path / "profiles"

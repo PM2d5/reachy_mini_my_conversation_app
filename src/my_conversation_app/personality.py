@@ -64,11 +64,11 @@ def list_personalities() -> list[str]:
         for profile_name in _visible_profile_names(config.PROFILES_DIRECTORY)
         if profile_name != DEFAULT_PROFILE_NAME
     ]
-    # default_english is default's English twin — keep it directly after default.
-    if "default_english" in bundled:
-        bundled.remove("default_english")
-        bundled.insert(0, "default_english")
-    names = [DEFAULT_PROFILE_NAME, *bundled]
+    # default_english is default's English twin and kids_playmate is the young-child
+    # companion — both stay pinned right behind default, ahead of the alphabetical rest.
+    pinned = [name for name in ("default_english", "kids_playmate") if name in bundled]
+    unpinned = [name for name in bundled if name not in pinned]
+    names = [DEFAULT_PROFILE_NAME, *pinned, *unpinned]
     user_root = config.user_personalities_root()
     if user_root != config.PROFILES_DIRECTORY:
         names.extend(_visible_profile_names(user_root, f"{USER_PERSONALITIES_DIRNAME}/"))

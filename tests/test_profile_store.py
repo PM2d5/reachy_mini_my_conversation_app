@@ -8,6 +8,7 @@ from my_conversation_app.profile_store import (
     write_profile,
     list_profile_names,
     read_profile_from_directory,
+    read_packaged_default_profile,
 )
 
 
@@ -70,3 +71,11 @@ def test_bundled_profiles_enable_head_tracking_by_default() -> None:
         profile = read_profile_from_directory(profile_name, DEFAULT_PROFILES_DIRECTORY / profile_name)
 
         assert "head_tracking" in profile.default_tools, profile_name
+
+
+def test_kids_playmate_ships_default_tools_except_ask_assistant() -> None:
+    """The young-child companion keeps every default tool but the home-assistant delegation."""
+    kids_playmate = read_profile_from_directory("kids_playmate", DEFAULT_PROFILES_DIRECTORY / "kids_playmate")
+
+    expected = tuple(name for name in read_packaged_default_profile().default_tools if name != "ask_assistant")
+    assert kids_playmate.default_tools == expected
