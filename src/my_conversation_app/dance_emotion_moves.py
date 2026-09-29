@@ -12,15 +12,58 @@ import numpy as np
 from numpy.typing import NDArray
 
 from reachy_mini.motion.move import Move
+from reachy_mini.utils.interpolation import linear_pose_interpolation
 from reachy_mini.motion.recorded_move import RecordedMoves
 from reachy_mini_dances_library.dance_move import DanceMove
 
 
 logger = logging.getLogger(__name__)
 
+# Library recordings start from their own posed first frame — up to ~14° away
+# from the live head pose for the goodbye emotion — so their first moments are
+# eased in from the pose MovementManager captures when the move starts.
+LEAD_IN_DURATION_S = 0.3
+
+StartPose = Tuple[NDArray[np.float32], Tuple[float, float], float]
+
+
+def smoothstep(alpha: float) -> float:
+    """Ease 0..1 with zero velocity at both ends, so big travels start and stop from rest."""
+    return alpha * alpha * (3.0 - 2.0 * alpha)
+
+
+def _apply_lead_in(
+    start_pose: StartPose | None,
+    head_pose: NDArray[np.float64],
+    antennas: NDArray[np.float64],
+    body_yaw: float,
+    t: float,
+) -> tuple[NDArray[np.float64], NDArray[np.float64], float]:
+    """Blend a recorded pose in from the captured start pose over the lead-in window."""
+    if start_pose is None or t >= LEAD_IN_DURATION_S:
+        return head_pose, antennas, body_yaw
+    ease = smoothstep(t / LEAD_IN_DURATION_S)
+    start_head, start_antennas, start_body_yaw = start_pose
+    blended_antennas = np.array(
+        [
+            start_antennas[0] + (antennas[0] - start_antennas[0]) * ease,
+            start_antennas[1] + (antennas[1] - start_antennas[1]) * ease,
+        ],
+        dtype=np.float64,
+    )
+    return (
+        linear_pose_interpolation(start_head, head_pose, ease),
+        blended_antennas,
+        start_body_yaw + (body_yaw - start_body_yaw) * ease,
+    )
+
 
 class DanceQueueMove(Move):  # type: ignore
     """Wrapper for dance moves to work with the movement queue system."""
+
+    # Lead-in blend source (head pose, antennas, body_yaw), captured by
+    # MovementManager when the move starts; None leaves the recording unblended.
+    start_pose: StartPose | None = None
 
     def __init__(self, move_name: str):
         """Initialize a DanceQueueMove."""
@@ -42,6 +85,8 @@ class DanceQueueMove(Move):  # type: ignore
             if isinstance(antennas, tuple):
                 antennas = np.array([antennas[0], antennas[1]])
 
+            head_pose, antennas, body_yaw = _apply_lead_in(self.start_pose, head_pose, antennas, body_yaw, t)
+
             return (head_pose, antennas, body_yaw)
 
         except Exception as e:
@@ -55,6 +100,10 @@ class DanceQueueMove(Move):  # type: ignore
 
 class EmotionQueueMove(Move):  # type: ignore
     """Wrapper for emotion moves to work with the movement queue system."""
+
+    # Lead-in blend source (head pose, antennas, body_yaw), captured by
+    # MovementManager when the move starts; None leaves the recording unblended.
+    start_pose: StartPose | None = None
 
     def __init__(self, emotion_name: str, recorded_moves: RecordedMoves):
         """Initialize an EmotionQueueMove."""
@@ -75,6 +124,8 @@ class EmotionQueueMove(Move):  # type: ignore
             # Convert to numpy array if antennas is tuple and return in official Move format
             if isinstance(antennas, tuple):
                 antennas = np.array([antennas[0], antennas[1]])
+
+            head_pose, antennas, body_yaw = _apply_lead_in(self.start_pose, head_pose, antennas, body_yaw, t)
 
             return (head_pose, antennas, body_yaw)
 
@@ -99,9 +150,11 @@ class GotoQueueMove(Move):  # type: ignore
         target_body_yaw: float = 0,
         start_body_yaw: float | None = None,
         duration: float = 1.0,
+        ease: bool = False,
     ):
         """Initialize a GotoQueueMove."""
         self._duration = duration
+        self._ease = ease
         self.target_head_pose = target_head_pose
         self.start_head_pose = start_head_pose
         self.target_antennas = target_antennas
@@ -115,13 +168,18 @@ class GotoQueueMove(Move):  # type: ignore
         return self._duration
 
     def evaluate(self, t: float) -> tuple[NDArray[np.float64] | None, NDArray[np.float64] | None, float | None]:
-        """Evaluate goto move at time t using linear interpolation."""
+        """Evaluate goto move at time t using (optionally eased) linear interpolation."""
         try:
             from reachy_mini.utils import create_head_pose
             from reachy_mini.utils.interpolation import linear_pose_interpolation
 
             # Clamp t to [0, 1] for interpolation
             t_clamped = max(0, min(1, t / self.duration))
+            if self._ease:
+                # The standby tuck/lift sweeps the antennas ~165° to the sleep
+                # fold; easing starts that sweep from rest instead of stepping
+                # to full speed in one tick, which reads as a twitch.
+                t_clamped = smoothstep(t_clamped)
 
             # Use start pose if available, otherwise neutral
             if self.start_head_pose is not None:

@@ -72,7 +72,8 @@ By default (`REACHY_MINI_WAKE_WORD_ENABLED=1`) the app does not listen continuou
 The first session behaves as before: Reachy greets you and listens. Once you say a
 goodbye ("再见", "拜拜", "goodbye", configurable) or stay silent for 5 minutes, the
 realtime session pauses, Reachy retracts its neck while keeping the head level
-(distinct from the sleep pose) and holds its antennas still, and the mic only
+(distinct from the sleep pose; a goodbye gesture already playing finishes first,
+capped at 3 s) and holds its antennas still, and the mic only
 feeds an offline wake word detector (openWakeWord). Saying the wake word lifts
 the head back up and resumes the session with a brief spoken acknowledgement — just a
 couple of words, like "I'm here", not a full greeting. Each wake opens a memoryless
