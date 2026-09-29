@@ -27,6 +27,11 @@ LEAD_IN_DURATION_S = 0.3
 StartPose = Tuple[NDArray[np.float32], Tuple[float, float], float]
 
 
+def smoothstep(alpha: float) -> float:
+    """Ease 0..1 with zero velocity at both ends, so big travels start and stop from rest."""
+    return alpha * alpha * (3.0 - 2.0 * alpha)
+
+
 def _apply_lead_in(
     start_pose: StartPose | None,
     head_pose: NDArray[np.float64],
@@ -37,9 +42,7 @@ def _apply_lead_in(
     """Blend a recorded pose in from the captured start pose over the lead-in window."""
     if start_pose is None or t >= LEAD_IN_DURATION_S:
         return head_pose, antennas, body_yaw
-    alpha = t / LEAD_IN_DURATION_S
-    # Smoothstep: no velocity step at either end of the blend.
-    ease = alpha * alpha * (3.0 - 2.0 * alpha)
+    ease = smoothstep(t / LEAD_IN_DURATION_S)
     start_head, start_antennas, start_body_yaw = start_pose
     blended_antennas = np.array(
         [
@@ -147,9 +150,11 @@ class GotoQueueMove(Move):  # type: ignore
         target_body_yaw: float = 0,
         start_body_yaw: float | None = None,
         duration: float = 1.0,
+        ease: bool = False,
     ):
         """Initialize a GotoQueueMove."""
         self._duration = duration
+        self._ease = ease
         self.target_head_pose = target_head_pose
         self.start_head_pose = start_head_pose
         self.target_antennas = target_antennas
@@ -163,13 +168,18 @@ class GotoQueueMove(Move):  # type: ignore
         return self._duration
 
     def evaluate(self, t: float) -> tuple[NDArray[np.float64] | None, NDArray[np.float64] | None, float | None]:
-        """Evaluate goto move at time t using linear interpolation."""
+        """Evaluate goto move at time t using (optionally eased) linear interpolation."""
         try:
             from reachy_mini.utils import create_head_pose
             from reachy_mini.utils.interpolation import linear_pose_interpolation
 
             # Clamp t to [0, 1] for interpolation
             t_clamped = max(0, min(1, t / self.duration))
+            if self._ease:
+                # The standby tuck/lift sweeps the antennas ~165° to the sleep
+                # fold; easing starts that sweep from rest instead of stepping
+                # to full speed in one tick, which reads as a twitch.
+                t_clamped = smoothstep(t_clamped)
 
             # Use start pose if available, otherwise neutral
             if self.start_head_pose is not None:

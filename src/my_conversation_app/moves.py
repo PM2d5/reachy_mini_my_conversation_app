@@ -537,6 +537,7 @@ class MovementManager:
             target_body_yaw=start_body_yaw,
             start_body_yaw=start_body_yaw,
             duration=duration,
+            ease=True,
         )
 
     def _publish_shared_state(self) -> None:

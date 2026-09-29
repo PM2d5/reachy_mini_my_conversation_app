@@ -387,9 +387,11 @@ def test_goodbye_sequence_never_steps_the_commanded_head_pose() -> None:
     """End-to-end over the working loop: emotion start + standby tuck command no single-tick jump."""
     robot = MagicMock()
     commanded_heads: list[np.ndarray] = []
+    commanded_antennas: list[tuple[float, float]] = []
 
-    def record_set_target(head: np.ndarray, antennas: object, body_yaw: object) -> None:
+    def record_set_target(head: np.ndarray, antennas: tuple[float, float], body_yaw: object) -> None:
         commanded_heads.append(head.copy())
+        commanded_antennas.append((float(antennas[0]), float(antennas[1])))
 
     robot.set_target.side_effect = record_set_target
 
@@ -430,3 +432,36 @@ def test_goodbye_sequence_never_steps_the_commanded_head_pose() -> None:
         for prev, cur in zip(commanded_heads, commanded_heads[1:])
     )
     assert max_step_deg < 5.0
+
+    # The tuck folds the antennas ~165° to the sleep position; before easing that
+    # sweep stepped from rest to full speed in one tick, which read as a twitch.
+    antenna_deg = [np.degrees([left, right]) for left, right in commanded_antennas]
+    tick_speeds = [float(np.linalg.norm(cur - prev)) for prev, cur in zip(antenna_deg, antenna_deg[1:])]
+    max_accel = max(abs(cur - prev) for prev, cur in zip(tick_speeds, tick_speeds[1:]))
+    assert max_accel < 0.5  # linear snap ~1.37°/tick; eased onset ~0.07°/tick per tick
+
+
+def test_eased_goto_starts_and_ends_from_rest() -> None:
+    """An eased goto covers less ground than a linear one early on, and reaches the same target."""
+    neutral = create_head_pose(0, 0, 0, 0, 0, 0, degrees=True)
+    common = {
+        "target_head_pose": neutral,
+        "start_head_pose": neutral,
+        "target_antennas": (1.0, -1.0),
+        "start_antennas": (0.0, 0.0),
+        "duration": 2.0,
+    }
+    eased = GotoQueueMove(**common, ease=True)
+    linear = GotoQueueMove(**common)
+
+    _, eased_antennas, _ = eased.evaluate(0.5)
+    _, linear_antennas, _ = linear.evaluate(0.5)
+    # A quarter of the way in time, smoothstep has covered 0.15625, not 0.25.
+    assert eased_antennas[0] == pytest.approx(0.15625)
+    assert linear_antennas[0] == pytest.approx(0.25)
+
+    # Both reach the same final pose.
+    _, eased_final, _ = eased.evaluate(eased.duration)
+    _, linear_final, _ = linear.evaluate(linear.duration)
+    assert np.allclose(eased_final, linear_final)
+    assert np.allclose(eased_final, [1.0, -1.0])
