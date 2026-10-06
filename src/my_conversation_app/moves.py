@@ -40,7 +40,7 @@ from numpy.typing import NDArray
 from reachy_mini import ReachyMini
 from reachy_mini.utils import create_head_pose
 from reachy_mini.motion.move import Move
-from reachy_mini.reachy_mini import SLEEP_HEAD_POSE, INIT_ANTENNAS_JOINT_POSITIONS, SLEEP_ANTENNAS_JOINT_POSITIONS
+from reachy_mini.reachy_mini import SLEEP_HEAD_POSE, INIT_ANTENNAS_JOINT_POSITIONS
 from reachy_mini.utils.interpolation import compose_world_offset, linear_pose_interpolation
 from my_conversation_app.dance_emotion_moves import GotoQueueMove, DanceQueueMove, EmotionQueueMove
 
@@ -62,9 +62,14 @@ STANDBY_HEAD_POSE = create_head_pose(
     mm=False,
     degrees=True,
 )
+# 20° short of vertical-down: that is a gravity dead point where the motors'
+# pure-P hold limit-cycles across the gearbox backlash (folded antennas twitch
+# until nudged). A decisive gravity bias is needed — 15° short still twitched
+# intermittently on the real unit — mirroring the SDK's 10° offset fix at
+# vertical-up (reachy_mini #951).
 STANDBY_ANTENNAS: tuple[float, float] = (
-    float(SLEEP_ANTENNAS_JOINT_POSITIONS[0]),
-    float(SLEEP_ANTENNAS_JOINT_POSITIONS[1]),
+    float(np.deg2rad(-160.0)),
+    float(np.deg2rad(160.0)),
 )
 NEUTRAL_ANTENNAS: tuple[float, float] = (
     float(INIT_ANTENNAS_JOINT_POSITIONS[0]),

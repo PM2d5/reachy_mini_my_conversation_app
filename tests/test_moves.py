@@ -76,6 +76,10 @@ def test_standby_tucks_head_and_freezes_antennas() -> None:
     # Standby must stay distinct from the real sleep pose: the head stays level.
     assert np.allclose(tuck_move.target_head_pose[:3, :3], np.eye(3))
     assert tuck_move.target_antennas == STANDBY_ANTENNAS
+    # The fold must stay clear of vertical-down: at that gravity dead point the
+    # pure-P motor hold limit-cycles across the gearbox backlash and the folded
+    # antennas twitch until nudged.
+    assert all(abs(a) < np.pi - np.deg2rad(10.0) for a in tuck_move.target_antennas)
     head, antennas, _body_yaw = tuck_move.evaluate(tuck_move.duration)
     assert np.allclose(head, STANDBY_HEAD_POSE)
     assert np.allclose(antennas, STANDBY_ANTENNAS)
