@@ -194,7 +194,7 @@ def test_default_greeting_prompt_varies_across_sessions(
     """Fresh, memoryless sessions should not always get the same default greeting."""
     monkeypatch.setattr(config, "REACHY_MINI_CUSTOM_PROFILE", None)
 
-    # 40 draws over 5 flavors: the odds of an all-same run are around 1e-28.
+    # 40 draws over 11 flavors: the odds of an all-same run are around 1e-40.
     greetings = {prompts_mod.get_session_greeting_prompt() for _ in range(40)}
 
     assert len(greetings) > 1

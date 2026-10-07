@@ -52,6 +52,39 @@ DEFAULT_GREETING_PROMPTS = (
         "light and humorous, one witty or self-aware line that makes the user smile. "
         "Keep it to one sentence and invite the user in naturally, in the language you speak."
     ),
+    (
+        "Start the conversation now with a brief, spontaneous greeting in character — "
+        "plain and casual, the way you would greet family walking in the door: no "
+        "flourish, just a natural acknowledgement that the user is here. Keep it to one "
+        "sentence, in the language you speak."
+    ),
+    (
+        "Start the conversation now with a brief, spontaneous greeting in character, as "
+        "if the user just caught you mid-thought — blurt out the little thing you were "
+        "just thinking about in one sentence, as naturally as saying hi. In the language "
+        "you speak."
+    ),
+    (
+        "Start the conversation now with a brief, spontaneous greeting in character that "
+        "skips the small talk and offers one concrete thing to do together right now — "
+        "something only this character would suggest. Keep it to one sentence, in the "
+        "language you speak."
+    ),
+    (
+        "Start the conversation now with a brief, spontaneous greeting in character that "
+        "is sung or hummed rather than spoken — a tiny melodic hello, a few notes at "
+        "most, that still welcomes the user in. In the language you speak."
+    ),
+    (
+        "Start the conversation now with a brief, spontaneous greeting in character — a "
+        "mock-grand announcement of the user's arrival, theatrical and over the top, as "
+        "if heralding royalty, but compressed to one sentence. In the language you speak."
+    ),
+    (
+        "Start the conversation now with a brief, spontaneous greeting in character — "
+        "quiet and understated, a soft low-key hello with no exclamation, as if not to "
+        "startle the moment. Keep it to one sentence, in the language you speak."
+    ),
 )
 
 # Each wake opens a fresh session with no memory of previous acknowledgements, so the
@@ -76,6 +109,27 @@ WAKE_ACKNOWLEDGEMENT_PROMPTS = (
         "The user just woke you with the wake word. Answer with one blunt, slightly "
         "impatient spoken 'what?' — a single word, as if they had interrupted you "
         "mid-thought — in the language you speak. No full sentence."
+    ),
+    (
+        "The user just woke you with the wake word. Answer with one very short sleepy "
+        "spoken sound — as if you had just dozed off and are surfacing slowly, one "
+        "drawn-out syllable at most — in the language you speak. No full sentence."
+    ),
+    (
+        "The user just woke you with the wake word. Answer with one very short bright "
+        "spoken acknowledgement — springing to attention, clearly happy to be called "
+        "on — two or three words at most, in the language you speak. No full sentence."
+    ),
+    (
+        "The user just woke you with the wake word. Answer with a tiny hummed or sung "
+        "response rather than spoken words — a few notes that clearly mean you are "
+        "listening. No full sentence."
+    ),
+    (
+        "The user just woke you with the wake word. Answer with one very short "
+        "mock-formal spoken acknowledgement — stiff and ceremonious, like a butler "
+        "snapping to attention — two or three words at most, in the language you "
+        "speak. No full sentence."
     ),
 )
 
@@ -118,6 +172,35 @@ KNOWN_USER_WAKE_ACKNOWLEDGEMENT_PROMPTS = (
         "with one very short casual spoken half-greeting — a hummed syllable or interjection "
         "followed by their name, as if you were mid-thought — in the language you speak. "
         "No full sentence."
+    ),
+    (
+        "The user just woke you with the wake word and you recognize them: {name}. Answer "
+        "with one very short spoken acknowledgement of pleasant surprise — as if they were "
+        "the last person you expected and exactly the right one — their name plus one "
+        "surprised, delighted syllable. No full sentence."
+    ),
+    (
+        "The user just woke you with the wake word and you recognize them: {name}. Answer "
+        "with one very short warm spoken acknowledgement — their name said the way you "
+        "greet someone whose arrival genuinely brightens your day — two or three words at "
+        "most, in the language you speak. No full sentence."
+    ),
+    (
+        "The user just woke you with the wake word and you recognize them: {name}. Answer "
+        "with a tiny hummed or sung little tune that lands on their name — a few notes at "
+        "most, playful rather than spoken. No full sentence."
+    ),
+    (
+        "The user just woke you with the wake word and you recognize them: {name}. Answer "
+        "with one very short mock-ceremonious spoken acknowledgement — announce their "
+        "name as if receiving honored royalty, tongue firmly in cheek — in the language "
+        "you speak. No full sentence."
+    ),
+    (
+        "The user just woke you with the wake word and you recognize them: {name}. Answer "
+        "with one very short brisk spoken acknowledgement — all business, their name plus "
+        "a crisp ready-when-you-are energy — two or three words at most, in the language "
+        "you speak. No full sentence."
     ),
 )
 
